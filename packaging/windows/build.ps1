@@ -1,5 +1,5 @@
 # Builds Windows packages (run on Windows with the MSVC Rust toolchain):
-#   dist\Reckon-<v>-windows-x64.zip         portable archive
+#   dist\Reckon-<v>-windows-x64.zip         portable archive (Reckon.exe app, bin\reckon.exe CLI)
 #   dist\Reckon-<v>-windows-x64-setup.exe   installer (when Inno Setup's iscc is available)
 #
 #   pwsh packaging/windows/build.ps1
@@ -16,9 +16,11 @@ cargo build --release -p reckon-app -p reckon-cli
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $Stage, $Out | Out-Null
+New-Item -ItemType Directory -Force -Path $Stage, (Join-Path $Stage "bin"), $Out | Out-Null
+# Windows file names are case-insensitive: "Reckon.exe" (app) and
+# "reckon.exe" (CLI) cannot share a folder, so the CLI goes in bin\.
 Copy-Item target\release\reckon-app.exe (Join-Path $Stage "Reckon.exe")
-Copy-Item target\release\reckon.exe (Join-Path $Stage "reckon.exe")
+Copy-Item target\release\reckon.exe (Join-Path $Stage "bin\reckon.exe")
 Copy-Item LICENSE (Join-Path $Stage "LICENSE.txt")
 Copy-Item README.md $Stage
 Copy-Item packaging\windows\reckon.ico $Stage

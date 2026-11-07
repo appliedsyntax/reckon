@@ -92,7 +92,9 @@ adb install dist/Reckon-0.1.0-android.apk
 
 ### Windows
 
-- `Reckon.exe` (the app, without a console window) and `reckon.exe` (the CLI)
+- `Reckon.exe` (the app, without a console window) and `bin\reckon.exe` (the
+  CLI; add `bin` to `PATH` to use it). They are in separate folders because
+  Windows file names are case-insensitive.
 - The installer is built with Inno Setup (preinstalled on GitHub's Windows
   runners). It adds a Start-menu shortcut and an uninstaller.
 - The `.exe` files have no embedded icon; the shortcuts and installer use
@@ -108,7 +110,8 @@ adb install dist/Reckon-0.1.0-android.apk
 | macOS `.dmg` | Built and mounted on macOS 27 (arm64). The app launches from the bundle and the bundled CLI runs. |
 | iOS simulator | Built with Xcode 27 and run on an iPhone 16 Pro simulator (iOS 26). Typing, results, live rates and time zones checked. |
 | Android `.apk` | Built with build-tools 36 / NDK 29 and run on an API 35 arm64 emulator. Typing, results and live rates checked. |
-| Linux, Windows | The engine, CLI and C interface type-check for both targets. The packages themselves have not been built yet (needs the CI workflow or a Linux/Windows machine). |
+| Windows | Built by CI (zip and installer). The first run's package had the app overwritten by the CLI; fixed by moving the CLI to `bin\`. |
+| Linux | The engine, CLI and C interface type-check; the package has not been built by CI yet. |
 | iOS `.ipa` | Not built: needs your Apple team and provisioning. |
 
 ## Icons
