@@ -1,0 +1,5 @@
+# Geometry
+fn hypot(a; b) = sqrt(a^2 + b^2)
+fn circle_area(r) = pi * r^2
+fn circumference(r) = 2 pi r
+fn deg(x) = x * 180 / pi

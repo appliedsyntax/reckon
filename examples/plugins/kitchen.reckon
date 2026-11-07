@@ -1,0 +1,5 @@
+# Kitchen units
+unit floz  "fl oz, fluid ounce, fluid ounces" = 29.5735 ml
+unit stick "stick of butter, sticks of butter" = 113 g
+unit pinch "pinch, pinches" = 0.36 ml
+unit dozen "dozen, dozens" = 12

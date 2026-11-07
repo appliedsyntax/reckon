@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Reckon
+GenericName=Calculator
+Comment=Natural-language calculator
+Exec=reckon-app
+Icon=reckon
+Terminal=false
+Categories=Utility;Calculator;
+Keywords=calculator;math;units;currency;

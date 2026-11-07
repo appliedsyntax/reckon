@@ -1,0 +1,13 @@
+[package]
+name = "reckon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reckon command-line calculator"
+
+[[bin]]
+name = "reckon"
+path = "src/main.rs"
+
+[dependencies]
+reckon-core = { path = "../reckon-core" }

@@ -1,0 +1,11 @@
+# Finance helpers
+var tax = 8.25%
+
+// compound($1000; 5%; 10)
+fn compound(principal; rate; years) = principal * (1 + rate) ^ years
+
+// tip($84)
+fn tip(bill) = bill * 18%
+
+// with_tax($20)
+fn with_tax(amount) = amount + tax

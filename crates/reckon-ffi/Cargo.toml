@@ -1,0 +1,12 @@
+[package]
+name = "reckon-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C interface to the Reckon engine (used by the iOS and Android apps)"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+reckon-core = { path = "../reckon-core" }
