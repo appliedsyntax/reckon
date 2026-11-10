@@ -87,5 +87,6 @@ and [Packaging](docs/packaging.md) to build the `.dmg`, `.apk`, iOS app,
 ## License
 
 MIT. See [LICENSE](LICENSE). The desktop app's binary also includes
-third-party code under other permissive licenses; see
+third-party code under other permissive licenses, listed with their notices
+in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt); see
 [docs/licensing.md](docs/licensing.md).

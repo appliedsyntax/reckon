@@ -25,6 +25,7 @@ install_tree() { # $1 = prefix root
   install -Dm644 packaging/linux/reckon.desktop "$1/share/applications/reckon.desktop"
   install -Dm644 packaging/linux/reckon.png "$1/share/icons/hicolor/256x256/apps/reckon.png"
   install -Dm644 LICENSE "$1/share/doc/reckon/LICENSE"
+  install -Dm644 THIRD_PARTY_LICENSES.txt "$1/share/doc/reckon/THIRD_PARTY_LICENSES.txt"
 }
 
 # Portable tarball
@@ -46,7 +47,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${DEBARCH}
-Depends: libc6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, libfontconfig1, libfreetype6, libx11-xcb1, libxcb1
+Depends: libc6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, libfontconfig1, libfreetype6, libx11-xcb1, libxcb1, fonts-dejavu-core
 Maintainer: The Reckon Authors <noreply@example.invalid>
 Description: Natural-language calculator
  Write math in plain words and see results next to each line. Includes the

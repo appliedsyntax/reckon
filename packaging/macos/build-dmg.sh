@@ -52,6 +52,8 @@ for s in 16 32 128 256 512; do
   sips -z $((s * 2)) $((s * 2)) "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
+cp THIRD_PARTY_LICENSES.txt "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -91,6 +93,7 @@ STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+cp THIRD_PARTY_LICENSES.txt "$STAGE/Third-Party Licenses.txt"
 cat > "$STAGE/Read Me.txt" <<'TXT'
 Drag Reckon to Applications.
 

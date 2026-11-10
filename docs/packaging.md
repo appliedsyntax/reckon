@@ -21,7 +21,8 @@ the files attached.
 
 - `Reckon.app` (GPUI desktop app), with the `reckon` CLI inside at
   `Contents/MacOS/reckon`
-- a shortcut to `/Applications` and a short readme
+- a shortcut to `/Applications`, a short readme and the third-party license
+  notices (also inside the app at `Contents/Resources/`)
 
 By default the app is **ad-hoc signed**. That works on the Mac that built
 it, but on other Macs Gatekeeper blocks it until the user right-clicks and
@@ -88,13 +89,16 @@ adb install dist/Reckon-0.1.0-android.apk
 - The tarball holds `bin/reckon-app`, `bin/reckon`, a `.desktop` file and an
   icon. Extract it anywhere, or copy its contents into `~/.local`.
 - The `.deb` installs into `/usr` and declares the X11/Wayland, Vulkan and
-  font libraries it needs.
+  font libraries it needs, plus `fonts-dejavu-core` for the editor font.
+- Both include `share/doc/reckon/THIRD_PARTY_LICENSES.txt`.
 
 ### Windows
 
 - `Reckon.exe` (the app, without a console window) and `bin\reckon.exe` (the
   CLI; add `bin` to `PATH` to use it). They are in separate folders because
   Windows file names are case-insensitive.
+- `LICENSE.txt` and `THIRD_PARTY_LICENSES.txt`, in the zip and the install
+  folder.
 - The installer is built with Inno Setup (preinstalled on GitHub's Windows
   runners). It adds a Start-menu shortcut and an uninstaller.
 - The `.exe` files have no embedded icon; the shortcuts and installer use

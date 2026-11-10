@@ -1,5 +1,5 @@
 # Builds Windows packages (run on Windows with the MSVC Rust toolchain):
-#   dist\Reckon-<v>-windows-x64.zip         portable archive (Reckon.exe app, bin\reckon.exe CLI)
+#   dist\Reckon-<v>-windows-x64.zip         portable archive (Reckon.exe app, bin\reckon.exe CLI, license notices)
 #   dist\Reckon-<v>-windows-x64-setup.exe   installer (when Inno Setup's iscc is available)
 #
 #   pwsh packaging/windows/build.ps1
@@ -22,6 +22,7 @@ New-Item -ItemType Directory -Force -Path $Stage, (Join-Path $Stage "bin"), $Out
 Copy-Item target\release\reckon-app.exe (Join-Path $Stage "Reckon.exe")
 Copy-Item target\release\reckon.exe (Join-Path $Stage "bin\reckon.exe")
 Copy-Item LICENSE (Join-Path $Stage "LICENSE.txt")
+Copy-Item THIRD_PARTY_LICENSES.txt $Stage
 Copy-Item README.md $Stage
 Copy-Item packaging\windows\reckon.ico $Stage
 
