@@ -64,7 +64,7 @@ actions!(
 );
 
 pub const LINE_H: Pixels = px(28.);
-const FONT_SIZE: Pixels = px(15.);
+const FONT_SIZE: Pixels = px(14.5);
 const PAD_X: Pixels = px(18.);
 const PAD_Y: Pixels = px(14.);
 const RESULTS_W: Pixels = px(260.);
@@ -126,11 +126,13 @@ pub struct Calc {
     theme: Theme,
     status: Option<(SharedString, Instant)>,
     doc_path: Option<PathBuf>,
+    /// Editor font family (see `editor_font` in main.rs).
+    font: SharedString,
     _subs: Vec<Subscription>,
 }
 
 impl Calc {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, font: SharedString, cx: &mut Context<Self>) -> Self {
         let doc_path = paths::data_dir().map(|d| d.join("document.reckon"));
         let text = doc_path
             .as_ref()
@@ -159,6 +161,7 @@ impl Calc {
             theme: Theme::for_appearance(window.appearance()),
             status: None,
             doc_path,
+            font,
             _subs: vec![sub],
         };
         if !calc.engine.plugin_errors.is_empty() {
@@ -1227,6 +1230,7 @@ impl Render for Calc {
             .flex_col()
             .bg(theme.bg)
             .text_color(theme.text)
+            .font_family(self.font.clone())
             .text_size(FONT_SIZE)
             .line_height(LINE_H)
             .child(
@@ -1276,6 +1280,7 @@ impl Render for Calc {
                     .justify_between()
                     .border_t_1()
                     .border_color(theme.divider)
+                    .font_family(".SystemUIFont")
                     .text_size(px(11.))
                     .text_color(theme.muted)
                     .child(status)

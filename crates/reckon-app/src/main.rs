@@ -6,9 +6,11 @@
 mod calc;
 mod theme;
 
+use std::borrow::Cow;
+
 use gpui::{
     px, size, App, AppContext, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem,
-    TitlebarOptions, WindowBounds, WindowOptions,
+    SharedString, TitlebarOptions, WindowBounds, WindowOptions,
 };
 
 use calc::*;
@@ -80,6 +82,36 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys(b);
 }
 
+/// Picks the editor font: a monospaced face so digits and operators line up.
+///
+/// macOS keeps SF Mono as a hidden system font (family `.SF NS Mono`) that
+/// cannot be looked up by name, so it is loaded from the system font folder
+/// at startup. Nothing is bundled. Other platforms use their usual monospace
+/// fonts, and the system UI font is the last resort.
+fn editor_font(cx: &App) -> SharedString {
+    if cfg!(target_os = "macos") {
+        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNSMono.ttf") {
+            let _ = cx.text_system().add_fonts(vec![Cow::Owned(bytes)]);
+        }
+    }
+    let available = cx.text_system().all_font_names();
+    let candidates = [
+        ".SF NS Mono",
+        "SF Mono",
+        "Menlo",
+        "Cascadia Mono",
+        "Consolas",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Noto Sans Mono",
+    ];
+    candidates
+        .iter()
+        .find(|c| available.iter().any(|a| a == *c))
+        .map(|c| SharedString::from(*c))
+        .unwrap_or_else(|| ".SystemUIFont".into())
+}
+
 fn main() {
     Application::new().run(|cx: &mut App| {
         bind_keys(cx);
@@ -123,8 +155,14 @@ fn main() {
             }),
             ..Default::default()
         };
+        let font = editor_font(cx);
+        if std::env::var_os("RECKON_DEBUG").is_some() {
+            eprintln!("reckon-app: editor font {font}");
+        }
         let window = cx
-            .open_window(options, |window, cx| cx.new(|cx| Calc::new(window, cx)))
+            .open_window(options, |window, cx| {
+                cx.new(|cx| Calc::new(window, font, cx))
+            })
             .expect("open window");
         window
             .update(cx, |view, window, cx| {

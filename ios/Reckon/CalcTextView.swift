@@ -22,7 +22,7 @@ final class CalcTextView: UITextView, UIGestureRecognizerDelegate {
         storage.addLayoutManager(layout)
         super.init(frame: .zero, textContainer: container)
 
-        font = .systemFont(ofSize: 17)
+        font = .monospacedSystemFont(ofSize: 16, weight: .regular)  // SF Mono
         textColor = .label
         backgroundColor = .systemBackground
         textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 60, right: resultsWidth + 22)
@@ -71,7 +71,7 @@ final class CalcTextView: UITextView, UIGestureRecognizerDelegate {
     private func makeLabel() -> UILabel {
         let l = UILabel()
         l.textAlignment = .right
-        l.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
+        l.font = .monospacedSystemFont(ofSize: 16, weight: .medium)
         l.textColor = .systemGreen
         l.adjustsFontSizeToFitWidth = true
         l.minimumScaleFactor = 0.6

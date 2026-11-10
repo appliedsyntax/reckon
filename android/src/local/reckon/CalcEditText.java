@@ -33,7 +33,8 @@ final class CalcEditText extends EditText {
         float dp = getResources().getDisplayMetrics().density;
         resultsWidth = 130 * dp;
         gap = 14 * dp;
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        setTypeface(Typeface.MONOSPACE);
         setGravity(Gravity.TOP | Gravity.START);
         setBackground(null);
         // No autocorrect or suggestions: they fight with math input.
@@ -47,7 +48,7 @@ final class CalcEditText extends EditText {
         setPadding(pad, pad, (int) (resultsWidth + gap * 2), pad);
 
         resultPaint.setTextSize(getTextSize());
-        resultPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        resultPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         resultPaint.setTextAlign(Paint.Align.RIGHT);
         dividerPaint.setStrokeWidth(Math.max(1f, dp / 2));
     }
