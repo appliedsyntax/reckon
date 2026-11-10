@@ -68,6 +68,9 @@ const FONT_SIZE: Pixels = px(15.);
 const PAD_X: Pixels = px(18.);
 const PAD_Y: Pixels = px(14.);
 const RESULTS_W: Pixels = px(260.);
+/// Scrolling can be clamped to the previous frame's content size, so keep
+/// correcting for a few frames until the cursor really is visible.
+const AUTOSCROLL_FRAMES: u8 = 3;
 
 const WELCOME: &str = "\
 # Welcome to Reckon
@@ -117,7 +120,8 @@ pub struct Calc {
     layouts: Vec<ShapedLine>,
     bounds: Option<Bounds<Pixels>>,
     scroll: ScrollHandle,
-    autoscroll: bool,
+    /// Frames left in which to bring the cursor into view (0 = done).
+    autoscroll: u8,
     selecting: bool,
     theme: Theme,
     status: Option<(SharedString, Instant)>,
@@ -150,7 +154,7 @@ impl Calc {
             layouts: Vec::new(),
             bounds: None,
             scroll: ScrollHandle::new(),
-            autoscroll: true,
+            autoscroll: AUTOSCROLL_FRAMES,
             selecting: false,
             theme: Theme::for_appearance(window.appearance()),
             status: None,
@@ -273,7 +277,7 @@ impl Calc {
         self.reversed = false;
         self.preferred_x = None;
         self.typing = false;
-        self.autoscroll = true;
+        self.autoscroll = AUTOSCROLL_FRAMES;
         cx.notify();
     }
 
@@ -288,7 +292,7 @@ impl Calc {
             self.sel = self.sel.end..self.sel.start;
         }
         self.typing = false;
-        self.autoscroll = true;
+        self.autoscroll = AUTOSCROLL_FRAMES;
         cx.notify();
     }
 
@@ -363,7 +367,7 @@ impl Calc {
         self.reversed = false;
         self.marked = None;
         self.preferred_x = None;
-        self.autoscroll = true;
+        self.autoscroll = AUTOSCROLL_FRAMES;
         self.changed(cx);
     }
 
@@ -595,7 +599,7 @@ impl Calc {
             });
             self.sel = s.sel;
             self.typing = false;
-            self.autoscroll = true;
+            self.autoscroll = AUTOSCROLL_FRAMES;
             self.changed(cx);
         }
     }
@@ -607,7 +611,7 @@ impl Calc {
             });
             self.sel = s.sel;
             self.typing = false;
-            self.autoscroll = true;
+            self.autoscroll = AUTOSCROLL_FRAMES;
             self.changed(cx);
         }
     }
@@ -1101,27 +1105,31 @@ impl Element for EditorElement {
         let refresh = self.calc.update(cx, |calc, _| {
             calc.layouts = lines;
             calc.bounds = Some(bounds);
-            if !std::mem::take(&mut calc.autoscroll) {
+            if calc.autoscroll == 0 {
                 return false;
             }
-            // Keep the cursor inside the scroll viewport.
+            // Keep the cursor line (plus a little margin) inside the viewport.
             let view = calc.scroll.bounds();
             let row = calc.row_of(calc.cursor());
             let top = bounds.top() + PAD_Y + LINE_H * row as f32;
-            let bottom = top + LINE_H;
+            let bottom = top + LINE_H + PAD_Y;
             let mut off = calc.scroll.offset();
             if top < view.top() {
                 off.y += view.top() - top;
             } else if bottom > view.bottom() {
                 off.y -= bottom - view.bottom();
             } else {
+                calc.autoscroll = 0;
                 return false;
             }
+            calc.autoscroll -= 1;
             calc.scroll.set_offset(off);
             true
         });
         if refresh {
-            window.refresh();
+            // `refresh()` is ignored while a frame is being drawn, so ask for
+            // the redraw on the next frame instead.
+            window.on_next_frame(|window, _| window.refresh());
         }
     }
 }
