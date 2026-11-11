@@ -70,6 +70,11 @@ python3 packaging/third-party-licenses.py
 Run it whenever `Cargo.lock` changes. The Linux CI job regenerates it and
 fails if the committed file is out of date.
 
+## Colour themes
+
+All twelve themes were designed for Reckon. Their names, colours and
+textures are original, so no theme licence applies.
+
 ## Fonts
 
 No font is bundled, so no font license applies to the packages. The editor

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::{
-    actions, div, fill, point, prelude::*, px, relative, size, App, Bounds, ClickEvent,
-    ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
+    actions, canvas, div, fill, point, prelude::*, px, relative, size, AnyElement, App, Bounds,
+    ClickEvent, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, Font, FontWeight, GlobalElementId, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathPromptOptions,
     Pixels, Point, ScrollHandle, ShapedLine, SharedString, Style, Subscription, TextRun,
@@ -16,7 +16,7 @@ use gpui::{
 };
 use reckon_core::{paths, Engine, Hl, LineKind, LineOutput, Rates};
 
-use crate::theme::Theme;
+use crate::theme::{Pattern, Theme, ThemeChoice, THEMES};
 
 actions!(
     reckon,
@@ -60,8 +60,72 @@ actions!(
         Export,
         Quit,
         ShowCharacterPalette,
+        ToggleThemePicker,
+        MatchSystemTheme,
+        PickerUp,
+        PickerDown,
+        PickerConfirm,
+        PickerCancel,
     ]
 );
+
+/// Switches to the theme at `index` in [`THEMES`] (used by the menu).
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = reckon, no_json)]
+pub struct SelectTheme {
+    pub index: usize,
+}
+
+/// The open theme picker. Row 0 is "Match System"; row `i + 1` is
+/// `THEMES[i]`. Moving the selection previews the theme; Escape restores
+/// `original`.
+struct Picker {
+    selected: usize,
+    original: ThemeChoice,
+}
+
+const PICKER_ROW_H: Pixels = px(32.);
+
+/// Index among the picker list's children of picker row `row`: the list
+/// is row 0, a "Light" heading, the light themes, a "Dark" heading, then
+/// the dark themes.
+fn picker_child(row: usize) -> usize {
+    let first_dark = THEMES.iter().position(|t| t.dark).unwrap_or(THEMES.len());
+    match row {
+        0 => 0,
+        r if r <= first_dark => r + 1,
+        r => r + 2,
+    }
+}
+
+/// A small preview of a theme: its background with a number-coloured and
+/// a result-coloured mark. "Match System" shows its light and dark halves.
+fn swatch_el(halves: [[gpui::Hsla; 3]; 2], theme: &Theme) -> impl IntoElement {
+    let half = |[bg, number, result]: [gpui::Hsla; 3]| {
+        div()
+            .flex_1()
+            .h_full()
+            .bg(bg)
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(3.))
+            .child(div().size(px(5.)).rounded_full().bg(number))
+            .child(div().w(px(9.)).h(px(4.)).rounded(px(2.)).bg(result))
+    };
+    let split = halves[0] != halves[1];
+    div()
+        .flex_none()
+        .w(px(38.))
+        .h(px(22.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
+        .flex()
+        .child(half(halves[0]))
+        .when(split, |d| d.child(half(halves[1])))
+}
 
 pub const LINE_H: Pixels = px(28.);
 const FONT_SIZE: Pixels = px(14.5);
@@ -124,6 +188,9 @@ pub struct Calc {
     autoscroll: u8,
     selecting: bool,
     theme: Theme,
+    choice: ThemeChoice,
+    picker: Option<Picker>,
+    picker_scroll: ScrollHandle,
     status: Option<(SharedString, Instant)>,
     doc_path: Option<PathBuf>,
     /// Editor font family (see `editor_font` in main.rs).
@@ -141,6 +208,7 @@ impl Calc {
         let engine = Engine::with_user_data();
         let outputs = engine.evaluate(&text);
         let sub = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
+        let choice = ThemeChoice::load();
         let mut calc = Calc {
             focus: cx.focus_handle(),
             sel: text.len()..text.len(),
@@ -158,7 +226,10 @@ impl Calc {
             scroll: ScrollHandle::new(),
             autoscroll: AUTOSCROLL_FRAMES,
             selecting: false,
-            theme: Theme::for_appearance(window.appearance()),
+            theme: Theme::get(choice.resolve(window.appearance())),
+            choice,
+            picker: None,
+            picker_scroll: ScrollHandle::new(),
             status: None,
             doc_path,
             font,
@@ -436,6 +507,287 @@ impl Calc {
                 format!("Rates: {} · {age}", r.source)
             }
         }
+    }
+
+    // ------------------------------------------------------------ themes
+
+    fn toggle_theme_picker(
+        &mut self,
+        _: &ToggleThemePicker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.picker.is_some() {
+            self.picker_cancel(&PickerCancel, window, cx);
+            return;
+        }
+        let selected = if self.choice.follow_system {
+            0
+        } else {
+            self.choice.fixed + 1
+        };
+        self.picker = Some(Picker {
+            selected,
+            original: self.choice,
+        });
+        self.picker_scroll.scroll_to_item(picker_child(selected));
+        cx.notify();
+    }
+
+    /// Previews picker row `row` without saving it.
+    fn preview_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        if picker.selected == row && self.choice == picker.original.previewed(row) {
+            return;
+        }
+        picker.selected = row;
+        self.choice = picker.original.previewed(row);
+        cx.notify();
+    }
+
+    fn picker_up(&mut self, _: &PickerUp, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = &self.picker {
+            let row = p.selected.checked_sub(1).unwrap_or(THEMES.len());
+            self.preview_row(row, cx);
+            self.picker_scroll.scroll_to_item(picker_child(row));
+        }
+    }
+
+    fn picker_down(&mut self, _: &PickerDown, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = &self.picker {
+            let row = (p.selected + 1) % (THEMES.len() + 1);
+            self.preview_row(row, cx);
+            self.picker_scroll.scroll_to_item(picker_child(row));
+        }
+    }
+
+    fn picker_confirm(&mut self, _: &PickerConfirm, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.take().is_some() {
+            self.apply_choice(self.choice, cx);
+        }
+    }
+
+    fn picker_cancel(&mut self, _: &PickerCancel, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.picker.take() {
+            self.choice = p.original;
+            cx.notify();
+        }
+    }
+
+    fn select_theme(&mut self, a: &SelectTheme, _: &mut Window, cx: &mut Context<Self>) {
+        let mut choice = self.choice;
+        choice.pick(a.index.min(THEMES.len() - 1));
+        self.picker = None;
+        self.apply_choice(choice, cx);
+    }
+
+    fn match_system_theme(&mut self, _: &MatchSystemTheme, _: &mut Window, cx: &mut Context<Self>) {
+        let mut choice = self.choice;
+        choice.follow_system = true;
+        self.picker = None;
+        self.apply_choice(choice, cx);
+    }
+
+    fn apply_choice(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
+        self.choice = choice;
+        choice.save();
+        // Native menus have no check state in GPUI, so rebuild them with a
+        // tick next to the current theme.
+        cx.set_menus(crate::app_menus(&choice));
+        let msg = if choice.follow_system {
+            format!(
+                "Theme: match system ({} by day, {} by night)",
+                THEMES[choice.light].name, THEMES[choice.dark].name
+            )
+        } else {
+            format!("Theme: {}", THEMES[choice.fixed].name)
+        };
+        self.set_status(msg);
+        cx.notify();
+    }
+
+    fn theme_label(&self, window: &Window) -> SharedString {
+        THEMES[self.choice.resolve(window.appearance())].name.into()
+    }
+
+    fn render_picker(
+        &self,
+        picker: &Picker,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let current = picker.original.current_row();
+        let first_dark = THEMES.iter().position(|t| t.dark).unwrap_or(THEMES.len());
+        let group = |title: &'static str| {
+            div()
+                .px(px(14.))
+                .pt(px(10.))
+                .pb(px(4.))
+                .text_size(px(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted)
+                .child(title)
+        };
+        let row_el = |row: usize, cx: &mut Context<Self>| {
+            let selected = row == picker.selected;
+            let (name, blurb, swatch): (SharedString, SharedString, _) = if row == 0 {
+                let (l, d) = (picker.original.light, picker.original.dark);
+                (
+                    "Match System".into(),
+                    format!("{} by day, {} by night", THEMES[l].name, THEMES[d].name).into(),
+                    [Theme::swatch(l), Theme::swatch(d)],
+                )
+            } else {
+                let t = &THEMES[row - 1];
+                let s = Theme::swatch(row - 1);
+                (t.name.into(), t.blurb.into(), [s, s])
+            };
+            div()
+                .id(("theme-row", row))
+                .h(PICKER_ROW_H)
+                .mx(px(6.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .cursor_pointer()
+                .when(selected, |d| d.bg(theme.highlight))
+                .child(swatch_el(swatch, theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(8.))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.text)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted)
+                                .text_size(px(11.))
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .child(blurb),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(14.))
+                        .flex_none()
+                        .text_color(theme.result)
+                        .font_weight(FontWeight::BOLD)
+                        .when(row == current, |d| d.child("✓")),
+                )
+                // Hovering previews; pressing keeps it (no wait for mouse-up).
+                .on_mouse_move(
+                    cx.listener(move |this, _: &MouseMoveEvent, _, cx| this.preview_row(row, cx)),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                        this.preview_row(row, cx);
+                        this.picker_confirm(&PickerConfirm, window, cx);
+                    }),
+                )
+        };
+        // Children of the list, in order: row 0, "Light", light rows,
+        // "Dark", dark rows (see `picker_child`).
+        let mut list: Vec<AnyElement> = vec![row_el(0, cx).into_any_element()];
+        list.push(group("LIGHT").into_any_element());
+        for i in 0..first_dark {
+            list.push(row_el(i + 1, cx).into_any_element());
+        }
+        list.push(group("DARK").into_any_element());
+        for i in first_dark..THEMES.len() {
+            list.push(row_el(i + 1, cx).into_any_element());
+        }
+        let hint = if cfg!(target_os = "macos") {
+            "↑↓ preview · ↩ keep · esc cancel"
+        } else {
+            "↑↓ preview · Enter keep · Esc cancel"
+        };
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .justify_center()
+            .child(
+                // Backdrop: clicking outside the list cancels.
+                div()
+                    .id("theme-backdrop")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.bg.opacity(0.35))
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            this.picker_cancel(&PickerCancel, window, cx)
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("theme-picker")
+                    .occlude()
+                    .mt(px(12.))
+                    .w(px(440.))
+                    .max_h(relative(0.86))
+                    .flex()
+                    .flex_col()
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(10.))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .font_family(".SystemUIFont")
+                    .text_size(px(13.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(14.))
+                            .py(px(9.))
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(
+                                div()
+                                    .text_color(theme.text)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Theme"),
+                            )
+                            .child(div().text_color(theme.muted).text_size(px(11.)).child(hint)),
+                    )
+                    .child(
+                        div()
+                            .id("theme-list")
+                            .flex_1()
+                            .min_h_0()
+                            .pt(px(6.))
+                            .pb(px(8.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.picker_scroll)
+                            .children(list),
+                    ),
+            )
     }
 
     // ------------------------------------------------------------ actions
@@ -908,6 +1260,99 @@ struct EditorElement {
     calc: Entity<Calc>,
 }
 
+/// The line between the text and the results: one hairline, or two for
+/// themes like Ledger that draw a double rule.
+fn divider(theme: Theme) -> impl IntoElement {
+    let line = || div().w(px(1.)).h_full().bg(theme.divider);
+    div()
+        .flex_none()
+        .flex()
+        .gap(px(2.))
+        .child(line())
+        .when(theme.double_divider, |d| d.child(line()))
+}
+
+/// Paints the results-column tint and the theme's texture behind the
+/// document. Only the visible part is drawn.
+fn backdrop(theme: Theme) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let results_left = bounds.right() - RESULTS_W;
+            window.paint_quad(fill(
+                Bounds::from_corners(point(results_left, bounds.top()), bounds.bottom_right()),
+                theme.results_bg,
+            ));
+            let visible = window.content_mask().bounds;
+            let (top, bottom) = (
+                visible.top().max(bounds.top()),
+                visible.bottom().min(bounds.bottom()),
+            );
+            let hline = |window: &mut Window, y: Pixels, color: gpui::Hsla| {
+                window.paint_quad(fill(
+                    Bounds::new(point(bounds.left(), y), size(bounds.size.width, px(1.))),
+                    color,
+                ));
+            };
+            match theme.pattern {
+                Pattern::None => {}
+                Pattern::Ruled => {
+                    // A rule under each line of text.
+                    let first = ((top - bounds.top() - PAD_Y) / LINE_H).floor().max(0.) as usize;
+                    let mut row = first;
+                    loop {
+                        let y = bounds.top() + PAD_Y + LINE_H * (row + 1) as f32 - px(1.);
+                        if y > bottom {
+                            break;
+                        }
+                        hline(window, y, theme.rule);
+                        row += 1;
+                    }
+                }
+                Pattern::Grid => {
+                    // Graph paper: a line every half row, stronger on row
+                    // boundaries so each line of text sits in its own band.
+                    let step = LINE_H / 2.;
+                    let minor = theme.rule.opacity(0.55);
+                    let origin = bounds.top() + PAD_Y;
+                    let mut i = ((top - origin) / step).floor() as i64;
+                    loop {
+                        let y = origin + step * i as f32;
+                        if y > bottom {
+                            break;
+                        }
+                        if y >= bounds.top() {
+                            hline(window, y, if i % 2 == 0 { theme.rule } else { minor });
+                        }
+                        i += 1;
+                    }
+                    let mut x = bounds.left() + PAD_X;
+                    let mut k = 0;
+                    while x < bounds.right() {
+                        window.paint_quad(fill(
+                            Bounds::from_corners(point(x, top), point(x + px(1.), bottom)),
+                            if k % 2 == 0 { theme.rule } else { minor },
+                        ));
+                        x += step;
+                        k += 1;
+                    }
+                }
+                Pattern::Scanlines => {
+                    let mut y = top - ((top - bounds.top()) % px(3.));
+                    while y < bottom {
+                        hline(window, y, theme.rule);
+                        y += px(3.);
+                    }
+                }
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 struct Prepaint {
     lines: Vec<ShapedLine>,
     quads: Vec<PaintQuad>,
@@ -1058,13 +1503,25 @@ impl Element for EditorElement {
             }
         }
         let cx_x = lines[cur_row].x_for_index(cursor - starts[cur_row]);
-        let cursor_quad = fill(
+        let cursor_bounds = if theme.block_cursor {
+            // As wide as the character under it (or a digit at line end).
+            let next = calc.next_char(cursor);
+            let w = if next > cursor && next <= starts[cur_row] + calc.line_range(cur_row).len() {
+                lines[cur_row].x_for_index(next - starts[cur_row]) - cx_x
+            } else {
+                FONT_SIZE * 0.6
+            };
+            Bounds::new(
+                point(origin_x + cx_x, row_top(cur_row) + px(4.)),
+                size(w.max(px(2.)), LINE_H - px(8.)),
+            )
+        } else {
             Bounds::new(
                 point(origin_x + cx_x, row_top(cur_row) + px(5.)),
                 size(px(2.), LINE_H - px(10.)),
-            ),
-            theme.cursor,
-        );
+            )
+        };
+        let cursor_quad = fill(cursor_bounds, theme.cursor);
         Prepaint {
             lines,
             quads,
@@ -1082,12 +1539,16 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus = self.calc.read(cx).focus.clone();
-        window.handle_input(
-            &focus,
-            ElementInputHandler::new(bounds, self.calc.clone()),
-            cx,
-        );
+        let calc = self.calc.read(cx);
+        let focus = calc.focus.clone();
+        // While the theme picker is open, typing must not edit the document.
+        if calc.picker.is_none() {
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(bounds, self.calc.clone()),
+                cx,
+            );
+        }
         for q in pre.quads.drain(..) {
             window.paint_quad(q);
         }
@@ -1139,7 +1600,7 @@ impl Element for EditorElement {
 
 impl Render for Calc {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::for_appearance(window.appearance());
+        let theme = Theme::get(self.choice.resolve(window.appearance()));
         self.theme = theme;
         if self
             .status
@@ -1148,6 +1609,12 @@ impl Render for Calc {
         {
             self.status = None;
         }
+        let picker = self
+            .picker
+            .as_ref()
+            .map(|p| self.render_picker(p, &theme, cx));
+        let theme_label = self.theme_label(window);
+
         let rows = self.text.split('\n').count();
         let cur_row = self.row_of(self.cursor());
         let results = (0..rows).map(|i| {
@@ -1163,6 +1630,7 @@ impl Render for Calc {
                 .overflow_hidden()
                 .when(active, |d| d.bg(theme.active_line))
                 .text_color(theme.result)
+                .font_weight(theme.result_weight)
                 .when_some(text, |d, t| {
                     let copy = t.clone();
                     d.cursor_pointer()
@@ -1185,8 +1653,19 @@ impl Render for Calc {
         };
 
         div()
-            .key_context("Calc")
+            .key_context(if self.picker.is_some() {
+                "ThemePicker"
+            } else {
+                "Calc"
+            })
             .track_focus(&self.focus)
+            .on_action(cx.listener(Self::toggle_theme_picker))
+            .on_action(cx.listener(Self::picker_up))
+            .on_action(cx.listener(Self::picker_down))
+            .on_action(cx.listener(Self::picker_confirm))
+            .on_action(cx.listener(Self::picker_cancel))
+            .on_action(cx.listener(Self::select_theme))
+            .on_action(cx.listener(Self::match_system_theme))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::delete_word_left))
@@ -1225,6 +1704,7 @@ impl Render for Calc {
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::export))
             .on_action(cx.listener(Self::show_character_palette))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1241,11 +1721,13 @@ impl Render for Calc {
                     .track_scroll(&self.scroll)
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_row()
                             .w_full()
                             .min_h_full()
                             .cursor(CursorStyle::IBeam)
+                            .child(backdrop(theme))
                             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
                             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1257,7 +1739,7 @@ impl Render for Calc {
                                     .overflow_hidden()
                                     .child(EditorElement { calc: cx.entity() }),
                             )
-                            .child(div().w(px(1.)).bg(theme.divider))
+                            .child(divider(theme))
                             .child(
                                 div()
                                     .w(RESULTS_W)
@@ -1280,11 +1762,24 @@ impl Render for Calc {
                     .justify_between()
                     .border_t_1()
                     .border_color(theme.divider)
+                    .bg(theme.status_bg)
                     .font_family(".SystemUIFont")
                     .text_size(px(11.))
                     .text_color(theme.muted)
                     .child(status)
-                    .child(hint),
+                    .child(
+                        div().flex().items_center().gap(px(14.)).child(hint).child(
+                            div()
+                                .id("theme-button")
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(theme.text))
+                                .child(theme_label)
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.toggle_theme_picker(&ToggleThemePicker, window, cx)
+                                })),
+                        ),
+                    ),
             )
+            .children(picker)
     }
 }

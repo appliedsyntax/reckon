@@ -108,6 +108,31 @@ in `rates.txt`.
 
 Keyboard shortcuts use `cmd` on macOS and `ctrl` elsewhere (see `main.rs`).
 
+## Themes
+
+The twelve themes live in the engine (`reckon_core::themes`), so every app
+draws the same colours from one table:
+
+- Each theme has 23 colours (background, results column, text, result,
+  the nine highlight classes, cursor, selection, rules, status bar, picker
+  surfaces…) plus its finishing touches: a texture (`grid`, `ruled`,
+  `scanlines` or none), a single or double divider, the result weight and
+  a bar or block cursor.
+- Tests in `themes.rs` check WCAG contrast for every theme: text at least
+  7:1, results and highlights at least 4.5:1.
+- The desktop app reads the table directly. The iOS and Android apps get it
+  as JSON from `reckon_themes()`.
+- `reckon_evaluate_highlighted()` returns each line's result plus its
+  highlight spans, with offsets in UTF-16 units (what `NSString` and Java
+  strings index by), so the mobile editors colour text the same way as the
+  desktop one.
+
+Each app draws the textures itself: GPUI quads on the desktop, a backdrop
+view behind the `UITextView` on iOS, and `onDraw` on Android. The choice
+(follow the system with a light and a dark theme, or one fixed theme) is
+saved in `app.conf` on the desktop, in `UserDefaults` on iOS and in
+`SharedPreferences` on Android.
+
 ## Dependency policy
 
 The engine and CLI use only `std`. The app adds GPUI and nothing else.

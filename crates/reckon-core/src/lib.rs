@@ -17,6 +17,7 @@ pub mod lexer;
 pub mod parser;
 pub mod paths;
 pub mod plugin;
+pub mod themes;
 pub mod time;
 pub mod tz;
 pub mod units;

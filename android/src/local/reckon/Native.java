@@ -14,6 +14,10 @@ final class Native {
     static native void engineFree(long engine);
     static native void setLocalZone(long engine, byte[] iana, int offsetSeconds);
     static native byte[] evaluate(long engine, byte[] document);
+    /** One line per input line: result TAB "start,len,kind;…" (UTF-16 offsets in that line). */
+    static native byte[] evaluateHighlighted(long engine, byte[] document);
+    /** The colour themes as JSON. */
+    static native byte[] themes();
     static native boolean ratesStale(long engine);
     static native byte[] fiatUrl();
     static native byte[] cryptoUrl();

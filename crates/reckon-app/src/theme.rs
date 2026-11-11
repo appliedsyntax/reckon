@@ -1,11 +1,20 @@
-//! Light and dark colour palettes.
+//! Drawing colours for the desktop app and the user's theme choice.
+//!
+//! The themes themselves live in `reckon_core::themes`, shared with the
+//! iOS and Android apps.
 
-use gpui::{rgb, Hsla, WindowAppearance};
-use reckon_core::Hl;
+use std::path::PathBuf;
 
+use gpui::{rgba, FontWeight, Hsla, WindowAppearance};
+use reckon_core::themes::{find, DEFAULT_DARK, DEFAULT_LIGHT};
+pub use reckon_core::themes::{Pattern, THEMES};
+use reckon_core::{paths, Hl};
+
+/// Resolved colours for drawing.
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub bg: Hsla,
+    pub results_bg: Hsla,
     pub text: Hsla,
     pub muted: Hsla,
     pub result: Hsla,
@@ -13,81 +22,206 @@ pub struct Theme {
     pub cursor: Hsla,
     pub divider: Hsla,
     pub active_line: Hsla,
-    number: Hsla,
-    unit: Hsla,
-    keyword: Hsla,
-    variable: Hsla,
-    function: Hsla,
-    operator: Hsla,
-    label: Hsla,
-    comment: Hsla,
-    header: Hsla,
+    /// Background of floating panels (the theme picker).
+    pub surface: Hsla,
+    pub border: Hsla,
+    /// Selected row in a list.
+    pub highlight: Hsla,
+    pub status_bg: Hsla,
+    /// Colour of the background texture.
+    pub rule: Hsla,
+    pub pattern: Pattern,
+    pub double_divider: bool,
+    pub result_weight: FontWeight,
+    pub block_cursor: bool,
+    index: usize,
+}
+
+fn hsla(v: u32) -> Hsla {
+    rgba(v).into()
 }
 
 impl Theme {
-    pub fn for_appearance(a: WindowAppearance) -> Theme {
-        match a {
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => Theme::dark(),
-            _ => Theme::light(),
-        }
-    }
-
-    pub fn dark() -> Theme {
+    pub fn get(index: usize) -> Theme {
+        let index = index.min(THEMES.len() - 1);
+        let t = &THEMES[index];
+        let c = &t.c;
         Theme {
-            bg: rgb(0x1c1c1e).into(),
-            text: rgb(0xe4e4e6).into(),
-            muted: rgb(0x7f848e).into(),
-            result: rgb(0x7ee0a1).into(),
-            selection: rgb(0x3a4a66).into(),
-            cursor: rgb(0x6ea8ff).into(),
-            divider: rgb(0x2c2c2f).into(),
-            active_line: rgb(0x232326).into(),
-            number: rgb(0xf0c674).into(),
-            unit: rgb(0x6fc3d1).into(),
-            keyword: rgb(0xc792ea).into(),
-            variable: rgb(0x82aaff).into(),
-            function: rgb(0x9ece6a).into(),
-            operator: rgb(0xb0b4bc).into(),
-            label: rgb(0x8a8f98).into(),
-            comment: rgb(0x5f6570).into(),
-            header: rgb(0xff8f6b).into(),
-        }
-    }
-
-    pub fn light() -> Theme {
-        Theme {
-            bg: rgb(0xfbfbfa).into(),
-            text: rgb(0x2f3337).into(),
-            muted: rgb(0x8b9098).into(),
-            result: rgb(0x1f8a4c).into(),
-            selection: rgb(0xcfe0ff).into(),
-            cursor: rgb(0x2f6fed).into(),
-            divider: rgb(0xe7e7e4).into(),
-            active_line: rgb(0xf2f2ef).into(),
-            number: rgb(0x9a6700).into(),
-            unit: rgb(0x0b7a99).into(),
-            keyword: rgb(0x8f3fb8).into(),
-            variable: rgb(0x2f5fd0).into(),
-            function: rgb(0x3d8b37).into(),
-            operator: rgb(0x55595f).into(),
-            label: rgb(0x8b9098).into(),
-            comment: rgb(0xa3a7ad).into(),
-            header: rgb(0xcf4a2c).into(),
+            bg: hsla(c.bg),
+            results_bg: hsla(c.results_bg),
+            text: hsla(c.text),
+            muted: hsla(c.muted),
+            result: hsla(c.result),
+            selection: hsla(c.selection),
+            cursor: hsla(c.cursor),
+            divider: hsla(c.divider),
+            active_line: hsla(c.active_line),
+            surface: hsla(c.surface),
+            border: hsla(c.border),
+            highlight: hsla(c.highlight),
+            status_bg: hsla(c.status_bg),
+            rule: hsla(c.rule),
+            pattern: t.pattern,
+            double_divider: t.double_divider,
+            result_weight: FontWeight(t.result_weight as f32),
+            block_cursor: t.block_cursor,
+            index,
         }
     }
 
     pub fn color(&self, hl: Hl) -> Hsla {
-        match hl {
-            Hl::Number => self.number,
-            Hl::Unit => self.unit,
-            Hl::Keyword => self.keyword,
-            Hl::Variable => self.variable,
-            Hl::Function => self.function,
-            Hl::Operator => self.operator,
-            Hl::Label => self.label,
-            Hl::Comment => self.comment,
-            Hl::Header => self.header,
-            Hl::Error => self.muted,
+        hsla(THEMES[self.index].c.for_hl(hl))
+    }
+
+    /// Colours for the picker's swatch: background, a number, the result.
+    pub fn swatch(index: usize) -> [Hsla; 3] {
+        let c = &THEMES[index].c;
+        [hsla(c.bg), hsla(c.number), hsla(c.result)]
+    }
+}
+
+fn is_dark(a: WindowAppearance) -> bool {
+    matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+/// Which theme to show. The app can follow
+/// the system's light/dark setting with one theme for each, or always use
+/// one theme. Saved in `app.conf` in the data folder.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ThemeChoice {
+    pub follow_system: bool,
+    pub light: usize,
+    pub dark: usize,
+    pub fixed: usize,
+}
+
+impl Default for ThemeChoice {
+    fn default() -> Self {
+        ThemeChoice {
+            follow_system: true,
+            light: DEFAULT_LIGHT,
+            dark: DEFAULT_DARK,
+            fixed: DEFAULT_DARK,
         }
+    }
+}
+
+impl ThemeChoice {
+    fn path() -> Option<PathBuf> {
+        paths::data_dir().map(|d| d.join("app.conf"))
+    }
+
+    /// Reads `key = value` lines; unknown keys and theme names are ignored.
+    pub fn parse(text: &str) -> ThemeChoice {
+        let mut c = ThemeChoice::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match (key.trim(), value.trim()) {
+                ("theme_mode", v) => c.follow_system = v != "fixed",
+                ("theme", v) => c.fixed = find(v).unwrap_or(c.fixed),
+                ("light_theme", v) => c.light = find(v).unwrap_or(c.light),
+                ("dark_theme", v) => c.dark = find(v).unwrap_or(c.dark),
+                _ => {}
+            }
+        }
+        c
+    }
+
+    pub fn serialize(self) -> String {
+        format!(
+            "theme_mode = {}\ntheme = {}\nlight_theme = {}\ndark_theme = {}\n",
+            if self.follow_system {
+                "system"
+            } else {
+                "fixed"
+            },
+            THEMES[self.fixed].name,
+            THEMES[self.light].name,
+            THEMES[self.dark].name,
+        )
+    }
+
+    pub fn load() -> ThemeChoice {
+        Self::path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| Self::parse(&t))
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if let Some(p) = Self::path() {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(p, self.serialize());
+        }
+    }
+
+    /// The choice that picker row `row` previews: row 0 is "Match
+    /// System", row `i + 1` is `THEMES[i]`.
+    pub fn previewed(self, row: usize) -> ThemeChoice {
+        let mut c = self;
+        if row == 0 {
+            c.follow_system = true;
+        } else {
+            c.pick(row - 1);
+        }
+        c
+    }
+
+    /// The picker row that represents this choice.
+    pub fn current_row(&self) -> usize {
+        if self.follow_system {
+            0
+        } else {
+            self.fixed + 1
+        }
+    }
+
+    /// The theme index to draw with for the window's current appearance.
+    pub fn resolve(&self, appearance: WindowAppearance) -> usize {
+        match (self.follow_system, is_dark(appearance)) {
+            (false, _) => self.fixed,
+            (true, true) => self.dark,
+            (true, false) => self.light,
+        }
+    }
+
+    /// Always use theme `index`. It also becomes the light or dark theme
+    /// used when following the system again.
+    pub fn pick(&mut self, index: usize) {
+        self.follow_system = false;
+        self.fixed = index;
+        if THEMES[index].dark {
+            self.dark = index;
+        } else {
+            self.light = index;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choice_round_trips() {
+        let mut c = ThemeChoice::default();
+        c.pick(find("Blossom").unwrap());
+        c.pick(find("Nocturne").unwrap());
+        assert_eq!(ThemeChoice::parse(&c.serialize()), c);
+        assert_eq!(THEMES[c.light].name, "Blossom");
+        assert_eq!(THEMES[c.dark].name, "Nocturne");
+        assert_eq!(c.resolve(WindowAppearance::Light), c.fixed);
+    }
+
+    #[test]
+    fn follows_system() {
+        let c =
+            ThemeChoice::parse("theme_mode = system\nlight_theme = Fjord\ndark_theme = Ember\n");
+        assert_eq!(THEMES[c.resolve(WindowAppearance::Light)].name, "Fjord");
+        assert_eq!(THEMES[c.resolve(WindowAppearance::Dark)].name, "Ember");
     }
 }

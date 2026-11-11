@@ -10,7 +10,9 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -52,6 +54,10 @@ public final class MainActivity extends Activity {
     private CalcEditText editor;
     private TextView status;
     private File docFile;
+    private LinearLayout root;
+    private LinearLayout statusBar;
+    private TextView themeButton;
+    private ReckonTheme.Store themes;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -61,31 +67,33 @@ public final class MainActivity extends Activity {
         TimeZone tz = TimeZone.getDefault();
         Native.setLocalZone(engine, Native.utf8(tz.getID()), tz.getOffset(System.currentTimeMillis()) / 1000);
 
-        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                == Configuration.UI_MODE_NIGHT_YES;
-        int bg = dark ? Color.rgb(0x1c, 0x1c, 0x1e) : Color.rgb(0xfb, 0xfb, 0xfa);
-        int fg = dark ? Color.rgb(0xe4, 0xe4, 0xe6) : Color.rgb(0x2f, 0x33, 0x37);
-        int muted = dark ? Color.rgb(0x7f, 0x84, 0x8e) : Color.rgb(0x8b, 0x90, 0x98);
-        int green = dark ? Color.rgb(0x7e, 0xe0, 0xa1) : Color.rgb(0x1f, 0x8a, 0x4c);
-        int divider = dark ? Color.rgb(0x2c, 0x2c, 0x2f) : Color.rgb(0xe7, 0xe7, 0xe4);
+        themes = new ReckonTheme.Store(getSharedPreferences("reckon", MODE_PRIVATE));
 
-        LinearLayout root = new LinearLayout(this);
+        root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(bg);
 
         editor = new CalcEditText(this);
-        editor.setTextColor(fg);
-        editor.setResultColors(green, divider);
         editor.setOnResultTap(this::copy);
         root.addView(editor, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        status = new TextView(this);
-        status.setTextColor(muted);
-        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        statusBar = new LinearLayout(this);
+        statusBar.setGravity(Gravity.CENTER_VERTICAL);
         int pad = (int) (10 * getResources().getDisplayMetrics().density);
-        status.setPadding(pad + pad / 2, pad / 2, pad, pad / 2);
+        statusBar.setPadding(pad + pad / 2, 0, pad / 2, 0);
+        status = new TextView(this);
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         status.setSingleLine(true);
-        root.addView(status);
+        statusBar.addView(status, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        themeButton = new TextView(this);
+        themeButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        themeButton.setPadding(pad, pad, pad, pad);
+        themeButton.setOnClickListener(v -> new ThemePicker(this, themes, new ThemePicker.Listener() {
+            @Override public void onChanged() { applyTheme(); }
+            @Override public boolean systemDark() { return isSystemDark(); }
+        }).show());
+        statusBar.addView(themeButton);
+        root.addView(statusBar);
+        applyTheme();
 
         // Edge-to-edge: keep content clear of the system bars and keyboard.
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -115,6 +123,36 @@ public final class MainActivity extends Activity {
         if (Native.ratesStale(engine)) refreshRates();
     }
 
+    private boolean isSystemDark() {
+        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** Paints the window, editor and status bar in the current theme. */
+    private void applyTheme() {
+        ReckonTheme t = themes.resolve(isSystemDark());
+        root.setBackgroundColor(t.color("bg"));
+        editor.setTheme(t);
+        statusBar.setBackgroundColor(t.color("status_bg"));
+        status.setTextColor(t.color("muted"));
+        themeButton.setTextColor(t.color("muted"));
+        themeButton.setText("◐  " + t.name);
+        themeButton.setContentDescription("Theme: " + t.name);
+        // Dark icons in the system bars on light themes, light icons on dark ones.
+        WindowInsetsController c = getWindow().getInsetsController();
+        if (c != null) {
+            int light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            c.setSystemBarsAppearance(t.dark ? 0 : light, light);
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration config) {
+        super.onConfigurationChanged(config);
+        applyTheme();  // the system switched light/dark (uiMode is handled here)
+    }
+
     @Override
     protected void onDestroy() {
         Native.engineFree(engine);
@@ -123,8 +161,16 @@ public final class MainActivity extends Activity {
     }
 
     private void recompute() {
-        String out = Native.str(Native.evaluate(engine, Native.utf8(editor.getText().toString())));
-        editor.setResults(out == null ? new String[0] : out.split("\n", -1));
+        String out = Native.str(Native.evaluateHighlighted(engine, Native.utf8(editor.getText().toString())));
+        String[] lines = out == null ? new String[0] : out.split("\n", -1);
+        String[] results = new String[lines.length];
+        String[] spans = new String[lines.length];
+        for (int i = 0; i < lines.length; i++) {
+            int tab = lines[i].indexOf('\t');
+            results[i] = tab < 0 ? lines[i] : lines[i].substring(0, tab);
+            spans[i] = tab < 0 ? "" : lines[i].substring(tab + 1);
+        }
+        editor.setOutput(results, spans);
     }
 
     private void save(String text) {

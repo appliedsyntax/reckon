@@ -192,9 +192,58 @@ On Windows and Linux, use Ctrl instead of ⌘.
 | Open (import) a file | ⌘O |
 | Export to a file | ⌘S |
 | Undo / redo | ⌘Z / ⇧⌘Z |
+| Choose a theme | ⌘K then ⌘T (or click the theme name in the status bar) |
 
 The document saves automatically. Opening a file copies its text into the
 document but never modifies the original; use Export to write a file.
+
+## Themes
+
+Every Reckon app (macOS, Windows, Linux, iOS and Android) has the same
+twelve themes, each built around one idea:
+
+| Light | | Dark | |
+|---|---|---|---|
+| **Paper** (default) | Warm graph paper and fountain-pen ink | **Graphite** (default) | Soft pencil on charcoal, mint answers |
+| **Ledger** | Bookkeeper's green paper with red rules | **Chalkboard** | Slate green board, coloured chalk |
+| **Dune** | Sand, terracotta and desert sage | **Blueprint** | Drafting-table blue with a white grid |
+| **Fjord** | Crisp Nordic air, slate and glacier teal | **Nocturne** | Indigo midnight, violet and aqua |
+| **Blossom** | Petal pink with plum ink and jade | **Ember** | Espresso dark with glowing amber |
+| **Delft** | Porcelain white glazed in cobalt | **Phosphor** | Green-screen terminal, scanlines and a block cursor |
+
+Some themes add a texture (Paper and Blueprint draw a grid, Ledger rules
+each line, Phosphor has scanlines), a double rule before the results, or a
+heavier result weight. In every theme, text has at least 7:1 contrast with
+the background and results and highlights at least 4.5:1; a test checks
+this.
+
+On the desktop, press ⌘K then ⌘T (Ctrl+K then Ctrl+T on Windows and
+Linux), click the theme name at the right of the status bar, or use
+View › Theme on macOS. In the picker, hovering over a theme or pressing ↑
+and ↓ previews it; clicking or Enter keeps it, and Esc (or clicking
+outside) goes back. The current theme has a ✓, in the picker and in the
+menu.
+
+On iOS and Android, tap the theme name at the right of the status bar. The
+list opens over the lower part of the screen without dimming the document,
+so tapping a theme shows it straight away; the ✓ marks the current one.
+Phosphor's block cursor is drawn on the desktop and Android; iOS draws its
+own caret, so there it is a green bar.
+
+**Match System** switches between a light and a dark theme with the
+system's appearance. It uses the last light theme and the last dark theme
+you picked (Paper and Graphite at first). Picking any other theme uses that
+theme regardless of the system's appearance.
+
+On the desktop the choice is saved in `app.conf` in the data folder (the
+phone apps keep it in their own settings):
+
+```text
+theme_mode = system        # or "fixed"
+theme = Blueprint          # used when theme_mode = fixed
+light_theme = Ledger       # used when theme_mode = system
+dark_theme = Nocturne
+```
 
 ## Files
 
@@ -204,8 +253,8 @@ document but never modifies the original; use Export to write a file.
 | Windows | `%APPDATA%\Reckon` |
 | Linux | `$XDG_CONFIG_HOME/reckon` or `~/.config/reckon` |
 
-The folder contains `document.reckon` (the app's document), `rates.txt`
-(cached exchange rates) and `plugins/`. Set `RECKON_HOME` to use a
+The folder contains `document.reckon` (the app's document), `app.conf`
+(the theme choice), `rates.txt` (cached exchange rates) and `plugins/`. Set `RECKON_HOME` to use a
 different folder.
 
 ## CLI

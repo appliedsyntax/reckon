@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::ptr;
 
-use reckon_core::{paths, Engine, Rates};
+use reckon_core::{paths, themes, Engine, Hl, Rates};
 
 pub struct ReckonEngine(Engine);
 
@@ -53,6 +53,68 @@ pub unsafe extern "C" fn reckon_evaluate(engine: *mut ReckonEngine, document: *c
     };
     let lines: Vec<String> = e.0.evaluate(doc).into_iter().map(|o| o.text.unwrap_or_default()).collect();
     output(lines.join("\n"))
+}
+
+fn hl_name(hl: Hl) -> &'static str {
+    match hl {
+        Hl::Number => "number",
+        Hl::Unit => "unit",
+        Hl::Keyword => "keyword",
+        Hl::Variable => "variable",
+        Hl::Function => "function",
+        Hl::Operator => "operator",
+        Hl::Label => "label",
+        Hl::Comment => "comment",
+        Hl::Header => "header",
+        Hl::Error => "error",
+    }
+}
+
+/// UTF-16 length of `s`: iOS and Android index strings in UTF-16 units.
+fn utf16_len(s: &str) -> usize {
+    s.chars().map(char::len_utf16).sum()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_evaluate_highlighted(
+    engine: *mut ReckonEngine,
+    document: *const c_char,
+) -> *mut c_char {
+    let (Some(e), Some(doc)) = (engine.as_ref(), input(document)) else {
+        return output(String::new());
+    };
+    let mut out = Vec::new();
+    for (line, o) in doc.split('\n').zip(e.0.evaluate(doc)) {
+        // Results never contain tabs or newlines; strip them just in case.
+        let result: String = o
+            .text
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| *c != '\t' && *c != '\n')
+            .collect();
+        let spans: Vec<String> = o
+            .spans
+            .iter()
+            .filter(|(r, _)| {
+                r.start < r.end
+                    && r.end <= line.len()
+                    && line.is_char_boundary(r.start)
+                    && line.is_char_boundary(r.end)
+            })
+            .map(|(r, hl)| {
+                let start = utf16_len(&line[..r.start]);
+                let len = utf16_len(&line[r.clone()]);
+                format!("{start},{len},{}", hl_name(*hl))
+            })
+            .collect();
+        out.push(format!("{result}\t{}", spans.join(";")));
+    }
+    output(out.join("\n"))
+}
+
+#[no_mangle]
+pub extern "C" fn reckon_themes() -> *mut c_char {
+    output(themes::themes_json())
 }
 
 #[no_mangle]
@@ -109,6 +171,20 @@ mod tests {
             let out = reckon_evaluate(e, doc.as_ptr());
             assert_eq!(CStr::from_ptr(out).to_str().unwrap(), "4\n\n\n$10");
             reckon_string_free(out);
+            let doc = CString::new("# Trip\nx = 2 × 3\n€5 + 1").unwrap();
+            let out = reckon_evaluate_highlighted(e, doc.as_ptr());
+            let text = CStr::from_ptr(out).to_str().unwrap().to_string();
+            reckon_string_free(out);
+            let lines: Vec<&str> = text.split('\n').collect();
+            assert_eq!(lines[0], "\t0,6,header");
+            assert!(lines[1].starts_with("6\t0,1,variable;"), "{}", lines[1]);
+            // "×" is 2 bytes in UTF-8 but one UTF-16 unit, so "3" is at 8
+            // (byte 9). Likewise "€" (3 bytes) puts "5" at 1.
+            assert!(lines[1].ends_with("6,1,operator;8,1,number"), "{}", lines[1]);
+            assert!(lines[2].contains("1,1,number"), "{}", lines[2]);
+            let json = reckon_themes();
+            assert!(CStr::from_ptr(json).to_str().unwrap().contains("\"name\":\"Paper\""));
+            reckon_string_free(json);
             let err = reckon_apply_rates(e, CString::new("{}").unwrap().as_ptr(), ptr::null());
             assert!(!err.is_null());
             reckon_string_free(err);

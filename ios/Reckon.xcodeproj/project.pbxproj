@@ -11,6 +11,8 @@
 		AA0000000000000000000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ContentView.swift */; };
 		AA0000000000000000000103 /* CalcTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* CalcTextView.swift */; };
 		AA0000000000000000000104 /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000004 /* Engine.swift */; };
+		AA0000000000000000000107 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* Theme.swift */; };
+		AA0000000000000000000108 /* ThemePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000008 /* ThemePicker.swift */; };
 		AA0000000000000000000106 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -21,6 +23,8 @@
 		AA0000000000000000000004 /* Engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine.swift; sourceTree = "<group>"; };
 		AA0000000000000000000005 /* Reckon-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Reckon-Bridging-Header.h"; sourceTree = "<group>"; };
 		AA0000000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA0000000000000000000007 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		AA0000000000000000000008 /* ThemePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemePicker.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* Reckon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reckon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -50,6 +54,8 @@
 				AA0000000000000000000002 /* ContentView.swift */,
 				AA0000000000000000000003 /* CalcTextView.swift */,
 				AA0000000000000000000004 /* Engine.swift */,
+				AA0000000000000000000007 /* Theme.swift */,
+				AA0000000000000000000008 /* ThemePicker.swift */,
 				AA0000000000000000000005 /* Reckon-Bridging-Header.h */,
 				AA0000000000000000000006 /* Assets.xcassets */,
 			);
@@ -156,6 +162,8 @@
 				AA0000000000000000000102 /* ContentView.swift in Sources */,
 				AA0000000000000000000103 /* CalcTextView.swift in Sources */,
 				AA0000000000000000000104 /* Engine.swift in Sources */,
+				AA0000000000000000000107 /* Theme.swift in Sources */,
+				AA0000000000000000000108 /* ThemePicker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

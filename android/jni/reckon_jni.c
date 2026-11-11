@@ -53,6 +53,17 @@ JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_evaluate(JNIEnv *env, jcla
     return r;
 }
 
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_evaluateHighlighted(JNIEnv *env, jclass c, jlong h, jbyteArray doc) {
+    char *d = from_bytes(env, doc);
+    jbyteArray r = to_bytes(env, reckon_evaluate_highlighted(ENGINE(h), d));
+    free(d);
+    return r;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_themes(JNIEnv *env, jclass c) {
+    return to_bytes(env, reckon_themes());
+}
+
 JNIEXPORT jboolean JNICALL Java_local_reckon_Native_ratesStale(JNIEnv *env, jclass c, jlong h) {
     return reckon_rates_stale(ENGINE(h)) ? JNI_TRUE : JNI_FALSE;
 }

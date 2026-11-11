@@ -26,6 +26,19 @@ void reckon_set_local_zone(ReckonEngine *engine, const char *iana, int offset_se
  * formatted result, or an empty line when the line has no result. */
 char *reckon_evaluate(ReckonEngine *engine, const char *document);
 
+/* Like reckon_evaluate, plus syntax highlighting. Each output line is
+ *   <result> TAB <span>;<span>;...
+ * where a span is "start,length,kind". start and length count UTF-16 code
+ * units from the start of that input line (what NSString and Java String
+ * index by). kind is one of: number unit keyword variable function
+ * operator label comment header error. */
+char *reckon_evaluate_highlighted(ReckonEngine *engine, const char *document);
+
+/* All colour themes as a JSON array: name, blurb, dark, pattern ("none",
+ * "grid", "ruled", "scanlines"), double_divider, result_weight (400-700),
+ * block_cursor and colors (an object of "#rrggbbaa" strings). */
+char *reckon_themes(void);
+
 /* 1 when exchange rates are built-in or older than 12 hours. */
 int reckon_rates_stale(const ReckonEngine *engine);
 

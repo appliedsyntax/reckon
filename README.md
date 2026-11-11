@@ -39,6 +39,8 @@ native front ends over the same engine. None of the apps use web views.
 - Variables, `prev`, `sum`/`total`, `avg`/`average`, labels, headers and comments
 - Functions: `sqrt`, `root`, `log`, `ln`, `round`, trigonometry, …
 - Plugins: plain-text `.reckon` files that add units, variables and functions
+- Twelve original themes on every platform, from graph-paper Paper to
+  green-screen Phosphor, with a live-preview picker and a match-system mode
 
 The full syntax is in the [User guide](docs/user-guide.md).
 
@@ -67,7 +69,7 @@ and [Packaging](docs/packaging.md) to build the `.dmg`, `.apk`, iOS app,
 | `crates/reckon-core` | Engine: lexer, parser, units, currency, dates, time zones, plugins (no dependencies) |
 | `crates/reckon-cli` | `reckon` command-line tool and REPL (no dependencies) |
 | `crates/reckon-app` | Desktop app built on GPUI |
-| `crates/reckon-ffi` | C interface to the engine (`include/reckon.h`), used by the mobile apps |
+| `crates/reckon-ffi` | C interface to the engine and themes (`include/reckon.h`), used by the mobile apps |
 | `ios/` | iOS app (Xcode project, SwiftUI + UIKit) |
 | `android/` | Android app (Java + JNI shim, built without Gradle) |
 | `packaging/` | Packaging scripts and icons for every platform |

@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use calc::*;
+use theme::THEMES;
 
 fn bind_keys(cx: &mut App) {
     let mac = cfg!(target_os = "macos");
@@ -56,6 +57,12 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(&format!("{m}-o"), Open, ctx),
         KeyBinding::new(&format!("{m}-s"), Export, ctx),
         KeyBinding::new(&format!("{m}-q"), Quit, None),
+        // Same chord as Zed's theme selector.
+        KeyBinding::new(&format!("{m}-k {m}-t"), ToggleThemePicker, None),
+        KeyBinding::new("up", PickerUp, Some("ThemePicker")),
+        KeyBinding::new("down", PickerDown, Some("ThemePicker")),
+        KeyBinding::new("enter", PickerConfirm, Some("ThemePicker")),
+        KeyBinding::new("escape", PickerCancel, Some("ThemePicker")),
     ];
     if mac {
         b.extend([
@@ -112,40 +119,82 @@ fn editor_font(cx: &App) -> SharedString {
         .unwrap_or_else(|| ".SystemUIFont".into())
 }
 
+/// The menu bar. Rebuilt when the theme changes, because GPUI menus have no
+/// check state: the current theme gets a ✓ in its name instead.
+pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
+    vec![
+        Menu {
+            name: "Reckon".into(),
+            items: vec![MenuItem::action("Quit Reckon", Quit)],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("Open…", Open),
+                MenuItem::action("Export…", Export),
+            ],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::action("Undo", Undo),
+                MenuItem::action("Redo", Redo),
+                MenuItem::separator(),
+                MenuItem::action("Cut", Cut),
+                MenuItem::action("Copy", Copy),
+                MenuItem::action("Paste", Paste),
+                MenuItem::action("Select All", SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("Copy Result", CopyResult),
+                MenuItem::action("Copy All", CopyAll),
+                MenuItem::action("Wrap in Parentheses", WrapParens),
+                MenuItem::action("Delete All", DeleteAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::submenu(Menu {
+                name: "Theme".into(),
+                items: theme_items(choice),
+            })],
+        },
+    ]
+}
+
+fn theme_items(choice: &theme::ThemeChoice) -> Vec<MenuItem> {
+    let tick = |on: bool, name: &str| -> String {
+        if on {
+            format!("✓  {name}")
+        } else {
+            format!("     {name}")
+        }
+    };
+    let current = choice.current_row();
+    let mut items = vec![
+        MenuItem::action("Select Theme…", ToggleThemePicker),
+        MenuItem::separator(),
+        MenuItem::action(tick(current == 0, "Match System"), MatchSystemTheme),
+        MenuItem::separator(),
+    ];
+    let mut was_dark = false;
+    for (index, t) in THEMES.iter().enumerate() {
+        if t.dark && !was_dark {
+            items.push(MenuItem::separator());
+            was_dark = true;
+        }
+        items.push(MenuItem::action(
+            tick(current == index + 1, t.name),
+            SelectTheme { index },
+        ));
+    }
+    items
+}
+
 fn main() {
     Application::new().run(|cx: &mut App| {
         bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.set_menus(vec![
-            Menu {
-                name: "Reckon".into(),
-                items: vec![MenuItem::action("Quit Reckon", Quit)],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("Open…", Open),
-                    MenuItem::action("Export…", Export),
-                ],
-            },
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::action("Undo", Undo),
-                    MenuItem::action("Redo", Redo),
-                    MenuItem::separator(),
-                    MenuItem::action("Cut", Cut),
-                    MenuItem::action("Copy", Copy),
-                    MenuItem::action("Paste", Paste),
-                    MenuItem::action("Select All", SelectAll),
-                    MenuItem::separator(),
-                    MenuItem::action("Copy Result", CopyResult),
-                    MenuItem::action("Copy All", CopyAll),
-                    MenuItem::action("Wrap in Parentheses", WrapParens),
-                    MenuItem::action("Delete All", DeleteAll),
-                ],
-            },
-        ]);
+        cx.set_menus(app_menus(&theme::ThemeChoice::load()));
         let bounds = Bounds::centered(None, size(px(780.), px(580.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
