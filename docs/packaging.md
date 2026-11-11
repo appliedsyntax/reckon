@@ -57,6 +57,8 @@ the engine for the platform being built.
   `EXPORT_METHOD=app-store-connect` for TestFlight and App Store builds.
 - The bundle id is `local.reckon.ios`. Change it to one you own before
   publishing.
+- `MOBILE_LICENSES.txt` is bundled as a resource and shown under
+  Theme › About & Licenses.
 
 ### Android (`.apk`)
 
@@ -72,6 +74,8 @@ zip → zipalign → apksigner
 ```
 
 - ABIs: `arm64-v8a` and `x86_64` (set `ANDROID_ABIS` to change).
+- `MOBILE_LICENSES.txt` is packed as `assets/licenses.txt` and shown under
+  Theme › About & licenses.
 - Android 11+ (minSdk 30), targetSdk 35. Native libraries are aligned for
   16 KB-page devices.
 - Signed with a generated **debug key** by default. For a release, set

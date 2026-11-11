@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Writes THIRD_PARTY_LICENSES.txt: the license notices for every crate that
-is compiled into the shipped Reckon binaries.
+is compiled into the shipped Reckon binaries. Also writes
+MOBILE_LICENSES.txt, the short notices bundled in the iOS and Android apps.
 
     python3 packaging/third-party-licenses.py
 
@@ -24,6 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "THIRD_PARTY_LICENSES.txt"
+MOBILE_OUT = ROOT / "MOBILE_LICENSES.txt"
 ROOTS = ["reckon-app", "reckon-cli"]
 TARGETS = [
     "aarch64-apple-darwin",
@@ -124,6 +126,9 @@ def main():
         pick = chosen(pkg.get("license"))
         index.append(f"  {name} {version}  {expr}" + (f"  [used under {pick}]" if pick else ""))
         label = f"{name} {version}"
+        if "MPL" in (pick or expr):
+            # MPL-2.0 section 3.2: say where the source of the covered files is.
+            label += f" (unmodified; source: https://crates.io/crates/{name}/{version})"
         files = license_files(pkg)
         if pick:
             # Only the license we use needs its notice; NOTICE files always go.
@@ -153,7 +158,8 @@ def main():
         "The desktop app (reckon-app) includes the open-source components",
         "listed below. Each is used under the license shown; where a crate",
         "offers a choice (\"A OR B\"), the license in brackets is the one",
-        "Reckon uses. Their notices follow the list.",
+        "Reckon uses. Their notices follow the list, then the notices of",
+        "native libraries that some crates bundle (FreeType).",
         "",
         "The command-line tool (reckon) and the iOS and Android apps contain",
         "only Reckon's own code, the Rust standard library and the operating",
@@ -176,9 +182,86 @@ def main():
     for text, names in sorted(groups.values(), key=lambda g: g[1][0]):
         lines += ["", "=" * 72, *wrap_names(names), "=" * 72, "", text, ""]
 
+    for (name, _), pkg in sorted(crates.items()):
+        if name == "freetype-sys":
+            lines += bundled_freetype(Path(pkg["manifest_path"]).parent / "freetype2")
+
     OUT.write_text("\n".join(lines).rstrip() + "\n")
+    MOBILE_OUT.write_text(mobile_notices(std_mit))
     print(f"{OUT.relative_to(ROOT)}: {len(crates)} crates, {len(groups)} distinct notices, "
           f"{missing} without a license file (standard text used)", file=sys.stderr)
+
+
+def mobile_notices(std_mit):
+    """The notices bundled inside the iOS and Android apps and shown on
+    their About screen. Those apps contain no third-party crates: only
+    Reckon's code, the Rust standard library and system frameworks."""
+    def unwrap(text):
+        # One line per paragraph, so phones wrap the text to their own width.
+        return "\n\n".join(" ".join(p.split()) for p in text.strip().split("\n\n"))
+
+    lines = [
+        "Reckon",
+        "======",
+        "",
+        unwrap((ROOT / "LICENSE").read_text()),
+        "",
+        "",
+        "Third-party software",
+        "====================",
+        "",
+        "This app contains Reckon's own code, the operating system's "
+        "frameworks and the Rust standard library.",
+        "",
+        "Rust standard library",
+        "---------------------",
+        "",
+        "Licensed under MIT OR Apache-2.0; used here under the MIT license. "
+        "It includes components by other authors under the same terms; see "
+        "https://github.com/rust-lang/rust/blob/master/COPYRIGHT",
+        "",
+        "Copyright (c) The Rust Project Contributors",
+        "",
+        unwrap(std_mit or "Licensed under the MIT license."),
+        "",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def bundled_freetype(src):
+    """Notices for the FreeType sources inside the freetype-sys crate.
+
+    freetype-sys links the system FreeType when it is 2.12.1 or newer and
+    otherwise compiles its own copy into the binary (Linux builds only), so
+    the credit the FreeType License asks for is always included.
+    """
+    header = (src / "include/freetype/freetype.h").read_text(errors="replace")
+    ver = ".".join(re.search(rf"#define FREETYPE_{k}\s+(\d+)", header).group(1)
+                   for k in ("MAJOR", "MINOR", "PATCH"))
+    year = re.search(r"Copyright \(C\) \d{4}-(\d{4})", header).group(1)
+
+    def license_part(readme):
+        text = (src / readme).read_text(errors="replace")
+        text = text[text.index("License\n*******"):]
+        return text.split("\nCredits\n")[0].strip()
+
+    zlib = (src / "src/gzip/zlib.h").read_text(errors="replace")
+    zlib = zlib[zlib.index("/*") + 2:zlib.index("*/")].strip()
+    rule = "=" * 72
+    return [
+        "", "#" * 72, "Bundled native libraries", "#" * 72, "",
+        rule, f"FreeType {ver} (inside the freetype-sys crate)", rule, "",
+        "Linux builds of the desktop app compile this copy of FreeType into",
+        "the program when the build machine's FreeType is older than 2.12.1.",
+        "Reckon uses it under the FreeType License (FTL).", "",
+        f"Portions of this software are copyright (c) {year} The FreeType",
+        "Project (www.freetype.org).  All rights reserved.", "",
+        (src / "LICENSE.TXT").read_text(errors="replace").strip(), "",
+        (src / "docs/FTL.TXT").read_text(errors="replace").strip(), "",
+        "--- PCF driver (src/pcf) ---", license_part("src/pcf/README"), "",
+        "--- BDF driver (src/bdf) ---", license_part("src/bdf/README"), "",
+        "--- zlib (src/gzip) ---", zlib, "",
+    ]
 
 
 def wrap_names(names, width=72):

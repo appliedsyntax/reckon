@@ -66,6 +66,17 @@ python3 packaging/third-party-licenses.py
   license used (MIT first) and includes only that license's text.
 - 41 crates publish no license file. For those it uses the standard license
   text with the crate's authors as the copyright holders.
+- `option-ext` is MPL-2.0. It is used unmodified, and its entry links to its
+  source, which is what MPL asks of a binary distribution.
+- **FreeType.** The `freetype-sys` crate (Linux only) links the system
+  FreeType when it is 2.12.1 or newer and otherwise compiles its own copy
+  into the app; the CI runner (Ubuntu 22.04) is in the second group.
+  FreeType is used under the FreeType License, which requires a credit in
+  the product's documentation, so the file always carries that credit, the
+  FTL text and the notices of FreeType's PCF, BDF and zlib parts.
+- Re-checked on 2026-11-11 after adding sheets and quick calc: no new
+  crates. The global shortcut and sheet storage use only the operating
+  system's APIs and the standard library.
 
 Run it whenever `Cargo.lock` changes. The Linux CI job regenerates it and
 fails if the committed file is out of date.
@@ -101,13 +112,24 @@ JetBrains Mono or IBM Plex Mono) and add its license to the notices.
 3. **Name.** "Reckon" is a working name and has not been checked for
    trademark conflicts. An existing accounting-software company is called
    Reckon. Clear the name, or pick another, before publishing.
-4. **Exchange-rate services.** The rate refresh calls the free
-   ExchangeRate-API open-access endpoint (`open.er-api.com`) and the
-   CoinGecko public API. Their terms of service, not our code license,
-   govern that data. Both ask for attribution on their free tiers and limit
-   request rates. The app names them in its status bar ("Rates:
-   ExchangeRate-API + CoinGecko"). Check their current terms and add links
-   in an About screen if required, or switch providers.
-5. **Time-zone data** is read at runtime from the operating system and not
+4. **Exchange-rate services.** Their terms of service, not our code
+   license, govern the data the app downloads; the MIT license on the source
+   is unaffected.
+   - ExchangeRate-API's open-access endpoint (`open.er-api.com`) allows
+     personal and commercial use with attribution and forbids redistributing
+     the data. The app names it in the status bar, and the phone apps'
+     About screen links back to it as their docs ask. The desktop app has no
+     About screen yet; add the link there too.
+   - CoinGecko's keyless public API requires attribution and is described as
+     being for prototyping, open-source and educational use; commercial use
+     needs one of their paid plans. Before selling Reckon, or if they retire
+     keyless access, get a plan, make crypto rates optional, or drop them.
+5. **Mobile notices.** Done. The iOS and Android apps contain the Rust
+   standard library (MIT OR Apache-2.0) and nothing else from third parties.
+   The generator also writes `MOBILE_LICENSES.txt` (Reckon's license and the
+   standard library's notice), which is bundled in both apps and shown under
+   Theme › About & Licenses, next to links crediting ExchangeRate-API and
+   CoinGecko.
+6. **Time-zone data** is read at runtime from the operating system and not
    redistributed. The built-in city table contains only facts (names and
    offsets).

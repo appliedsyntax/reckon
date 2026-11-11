@@ -103,6 +103,10 @@ final class ThemePicker {
             list.addView(row(t, theme.name, theme.blurb, new ReckonTheme[]{theme}, current,
                     v -> { store.pick(theme); changed(); }));
         }
+        TextView about = text("About & licenses", 15, t.color("text"), false);
+        about.setPadding((int) (22 * dp), (int) (22 * dp), (int) (22 * dp), (int) (12 * dp));
+        about.setOnClickListener(v -> showAbout(t));
+        list.addView(about);
         ScrollView scroll = new ScrollView(ctx);
         scroll.addView(list);
         sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -117,6 +121,82 @@ final class ThemePicker {
         final int keep = y;
         scroll.post(() -> scroll.scrollTo(0, keep));
         dialog.setContentView(sheet);
+    }
+
+    /** Version, data-source credits and the bundled license notices. */
+    private void showAbout(ReckonTheme t) {
+        Dialog d = new Dialog(ctx);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (20 * dp);
+        box.setPadding(pad, pad, pad, pad);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(t.color("surface"));
+        bg.setCornerRadius(18 * dp);
+        bg.setStroke(Math.max(1, (int) dp), t.color("border"));
+
+        String version = "";
+        try {
+            version = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
+        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
+        }
+        box.addView(text("Reckon " + version, 19, t.color("text"), true));
+        TextView sub = wrapped("A natural-language calculator. Open source under the MIT License.", 14, t.color("muted"));
+        box.addView(sub);
+
+        box.addView(heading(t, "DATA"));
+        box.addView(link(t, "Rates By Exchange Rate API", "https://www.exchangerate-api.com"));
+        box.addView(link(t, "Crypto prices powered by CoinGecko", "https://www.coingecko.com"));
+
+        box.addView(heading(t, "LICENSES"));
+        String licenses = "Reckon is released under the MIT License.";
+        try (java.io.InputStream in = ctx.getAssets().open("licenses.txt")) {
+            licenses = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException ignored) {
+        }
+        TextView body = wrapped(licenses, 12, t.color("text"));
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setTextIsSelectable(true);
+        box.addView(body);
+
+        ScrollView scroll = new ScrollView(ctx);
+        scroll.setBackground(bg);
+        scroll.setClipToOutline(true);
+        scroll.addView(box);
+        d.setContentView(scroll);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(0));
+            android.util.DisplayMetrics m = ctx.getResources().getDisplayMetrics();
+            w.setLayout((int) (m.widthPixels * 0.92f), (int) (m.heightPixels * 0.8f));
+        }
+        d.show();
+    }
+
+    private TextView wrapped(String s, int sp, int color) {
+        TextView v = new TextView(ctx);
+        v.setText(s);
+        v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        v.setTextColor(color);
+        v.setPadding(0, (int) (4 * dp), 0, 0);
+        return v;
+    }
+
+    private View heading(ReckonTheme t, String title) {
+        TextView v = text(title, 12, t.color("muted"), true);
+        v.setLetterSpacing(0.06f);
+        v.setPadding(0, (int) (18 * dp), 0, (int) (2 * dp));
+        return v;
+    }
+
+    private View link(ReckonTheme t, String label, String url) {
+        TextView v = wrapped(label, 14, t.color("result"));
+        v.setPadding(0, (int) (8 * dp), 0, (int) (4 * dp));
+        v.setOnClickListener(x -> ctx.startActivity(
+                new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))));
+        v.setContentDescription(label + ", opens " + url);
+        return v;
     }
 
     private void changed() {

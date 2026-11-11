@@ -46,6 +46,15 @@ struct ThemePicker: View {
                 }
                 section("Light", ReckonTheme.light, theme)
                 section("Dark", ReckonTheme.darkThemes, theme)
+                Section {
+                    NavigationLink {
+                        AboutView(theme: theme)
+                    } label: {
+                        Text("About & Licenses")
+                            .foregroundStyle(theme.swiftUI("text"))
+                    }
+                    .listRowBackground(theme.swiftUI("bg"))
+                }
             }
             .scrollContentBackground(.hidden)
             .background(theme.swiftUI("surface"))
@@ -59,6 +68,7 @@ struct ThemePicker: View {
                 }
             }
         }
+        .tint(theme.swiftUI("result"))
         .presentationBackground(theme.swiftUI("surface"))
     }
 

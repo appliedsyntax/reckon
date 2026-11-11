@@ -64,7 +64,11 @@ javac -Xlint:-options -source 17 -target 17 -classpath "$JAR" -d "$WORK/classes"
 
 # 3. Resources + manifest
 "$BT/aapt2" compile --dir android/res -o "$WORK/res.zip"
+# The license notices shown on the About screen.
+mkdir -p "$WORK/assets"
+cp MOBILE_LICENSES.txt "$WORK/assets/licenses.txt"
 "$BT/aapt2" link -o "$WORK/unsigned.apk" -I "$JAR" --manifest android/AndroidManifest.xml \
+  -A "$WORK/assets" \
   --min-sdk-version "$MIN_SDK" --target-sdk-version "$TARGET_SDK" \
   --version-code "$VERSION_CODE" --version-name "$VERSION" "$WORK/res.zip"
 (cd "$WORK/stage" && zip -qr -X "$WORK/unsigned.apk" classes.dex lib)

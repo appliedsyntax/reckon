@@ -42,8 +42,8 @@ jobs:
       - name: Third-party notices are up to date
         run: |
           python3 packaging/third-party-licenses.py
-          git diff --exit-code THIRD_PARTY_LICENSES.txt \
-            || { echo "::error::Run packaging/third-party-licenses.py and commit THIRD_PARTY_LICENSES.txt"; exit 1; }
+          git diff --exit-code THIRD_PARTY_LICENSES.txt MOBILE_LICENSES.txt \
+            || { echo "::error::Run packaging/third-party-licenses.py and commit the license files"; exit 1; }
       - run: packaging/linux/build.sh
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/* }
