@@ -51,27 +51,16 @@ The full syntax is in the [User guide](docs/user-guide.md).
 
 ## Install
 
-With [Homebrew](https://brew.sh), add the tap first. Homebrew 7 and later
-also needs the `brew trust` line; older versions can skip it.
+With [Homebrew](https://brew.sh), the Mac app:
 
 ```bash
-brew tap appliedsyntax/tap
-```
-
-```bash
-brew trust appliedsyntax/tap
-```
-
-The Mac app:
-
-```bash
-brew install --cask reckon
+brew install --cask appliedsyntax/tap/reckon
 ```
 
 The command-line tool, on macOS or Linux:
 
 ```bash
-brew install reckon-cli
+brew install appliedsyntax/tap/reckon-cli
 ```
 
 The Mac app is not yet signed with an Apple Developer ID, so macOS blocks

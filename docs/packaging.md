@@ -131,8 +131,11 @@ shasum -a 256 Reckon-<v>-macos-universal.dmg
 curl -sL https://github.com/appliedsyntax/reckon/archive/refs/tags/v<v>.tar.gz | shasum -a 256
 ```
 
-Homebrew 7 and later will not load a third-party tap until the user runs
-`brew trust appliedsyntax/tap`, so the install instructions include it.
+Homebrew 6 and later will not load a third-party tap until it is trusted.
+Installing by full name (`brew install --cask appliedsyntax/tap/reckon`)
+adds the tap and trusts that one package, so the install instructions use
+full names. Short names need `brew tap` and `brew trust appliedsyntax/tap`
+first.
 
 The official Homebrew catalog (`brew install --cask reckon` with no tap)
 needs a Developer ID-signed, notarized app and an established project;
