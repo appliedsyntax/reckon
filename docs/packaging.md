@@ -25,8 +25,9 @@ the files attached.
   notices (also inside the app at `Contents/Resources/`)
 
 By default the app is **ad-hoc signed**. That works on the Mac that built
-it, but on other Macs Gatekeeper blocks it until the user right-clicks and
-chooses Open. For public distribution you need an Apple **Developer ID
+it, but on other Macs Gatekeeper blocks it. On macOS 15 and later the user
+has to open it once, then allow it under System Settings › Privacy &
+Security › Open Anyway; on older versions right-click › Open is enough. For public distribution you need an Apple **Developer ID
 Application** certificate (from the paid Apple Developer Program) and
 notarization:
 
@@ -110,6 +111,32 @@ adb install dist/Reckon-0.1.0-android.apk
   `rc.exe` from a `build.rs`).
 - Windows SmartScreen warns about unsigned installers. Sign them with an
   Authenticode certificate (`signtool sign`) before distributing.
+
+## Homebrew
+
+The tap lives in a separate repository,
+[appliedsyntax/homebrew-tap](https://github.com/appliedsyntax/homebrew-tap):
+
+- `Casks/reckon.rb` installs `Reckon.app` from the release's universal DMG.
+- `Formula/reckon-cli.rb` builds the `reckon` command from the tagged source.
+
+For each release, after the `v*` tag's CI run has published the files,
+update both with the new version and checksums:
+
+```bash
+shasum -a 256 Reckon-<v>-macos-universal.dmg
+```
+
+```bash
+curl -sL https://github.com/appliedsyntax/reckon/archive/refs/tags/v<v>.tar.gz | shasum -a 256
+```
+
+Homebrew 7 and later will not load a third-party tap until the user runs
+`brew trust appliedsyntax/tap`, so the install instructions include it.
+
+The official Homebrew catalog (`brew install --cask reckon` with no tap)
+needs a Developer ID-signed, notarized app and an established project;
+apply once both are true.
 
 ## Verified so far
 

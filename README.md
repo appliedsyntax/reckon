@@ -49,7 +49,39 @@ native front ends over the same engine. None of the apps use web views.
 
 The full syntax is in the [User guide](docs/user-guide.md).
 
-## Quick start
+## Install
+
+With [Homebrew](https://brew.sh), add the tap first. Homebrew 7 and later
+also needs the `brew trust` line; older versions can skip it.
+
+```bash
+brew tap appliedsyntax/tap
+```
+
+```bash
+brew trust appliedsyntax/tap
+```
+
+The Mac app:
+
+```bash
+brew install --cask reckon
+```
+
+The command-line tool, on macOS or Linux:
+
+```bash
+brew install reckon-cli
+```
+
+The Mac app is not yet signed with an Apple Developer ID, so macOS blocks
+the first launch: open it once and dismiss the warning, then go to System
+Settings › Privacy & Security and click **Open Anyway** (on macOS 14 and
+earlier, right-click the app and choose Open instead). Packages for Windows, Linux,
+Android and the iOS simulator are on the
+[releases page](https://github.com/appliedsyntax/reckon/releases).
+
+## Build from source
 
 ```bash
 cargo run -p reckon-cli -- '$30 in EUR'

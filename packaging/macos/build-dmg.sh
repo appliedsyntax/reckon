@@ -100,9 +100,9 @@ Drag Reckon to Applications.
 Command-line tool: the `reckon` CLI is inside the app. To use it in a terminal:
   sudo ln -sf /Applications/Reckon.app/Contents/MacOS/reckon /usr/local/bin/reckon
 
-If macOS says the app "cannot be opened" (unsigned build), right-click it
-and choose Open, or run:
-  xattr -dr com.apple.quarantine /Applications/Reckon.app
+If macOS blocks the app (unsigned build): open it once and dismiss the
+warning, then go to System Settings > Privacy & Security and click
+"Open Anyway". On macOS 14 and earlier, right-click it and choose Open.
 TXT
 DMG="$OUT/Reckon-${VERSION}-macos-${ARCH}.dmg"
 rm -f "$DMG"
