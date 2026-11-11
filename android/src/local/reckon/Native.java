@@ -18,6 +18,13 @@ final class Native {
     static native byte[] evaluateHighlighted(long engine, byte[] document);
     /** The colour themes as JSON. */
     static native byte[] themes();
+    /** Sheets in a folder (see reckon.h): JSON list, setup, create, rename to title, trash, restore. */
+    static native byte[] sheetsList(byte[] dir);
+    static native byte[] sheetsPrepare(byte[] dir, byte[] legacy, byte[] welcome);
+    static native byte[] sheetCreate(byte[] dir, byte[] text);
+    static native byte[] sheetTidy(byte[] dir, byte[] file);
+    static native byte[] sheetTrash(byte[] dir, byte[] file);
+    static native byte[] sheetRestore(byte[] dir, byte[] trashed);
     static native boolean ratesStale(long engine);
     static native byte[] fiatUrl();
     static native byte[] cryptoUrl();

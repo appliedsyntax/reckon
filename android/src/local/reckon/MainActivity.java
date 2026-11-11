@@ -25,6 +25,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.List;
 import java.util.TimeZone;
 
 public final class MainActivity extends Activity {
@@ -53,7 +54,15 @@ public final class MainActivity extends Activity {
     private long engine;
     private CalcEditText editor;
     private TextView status;
-    private File docFile;
+    private File sheetsDir;
+    /** File name of the open sheet. */
+    private String current = "";
+    /** Path of the last deleted sheet in the trash, for Undo. */
+    private String trashed;
+    private TextView sheetButton;
+    private TextView undoButton;
+    /** True while a sheet is being loaded, so loading does not save. */
+    private boolean loading;
     private LinearLayout root;
     private LinearLayout statusBar;
     private TextView themeButton;
@@ -83,7 +92,23 @@ public final class MainActivity extends Activity {
         status = new TextView(this);
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         status.setSingleLine(true);
+        sheetButton = new TextView(this);
+        sheetButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        sheetButton.setTypeface(android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, 600, false));
+        sheetButton.setSingleLine(true);
+        sheetButton.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sheetButton.setMaxWidth((int) (150 * getResources().getDisplayMetrics().density));
+        sheetButton.setPadding(0, pad, pad, pad);
+        sheetButton.setOnClickListener(v -> new SheetsPicker(this, sheetsHost()).show());
+        statusBar.addView(sheetButton);
         statusBar.addView(status, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        undoButton = new TextView(this);
+        undoButton.setText("Undo");
+        undoButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        undoButton.setPadding(pad, pad, pad, pad);
+        undoButton.setVisibility(android.view.View.GONE);
+        undoButton.setOnClickListener(v -> undoDelete());
+        statusBar.addView(undoButton);
         themeButton = new TextView(this);
         themeButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         themeButton.setPadding(pad, pad, pad, pad);
@@ -103,22 +128,21 @@ public final class MainActivity extends Activity {
         });
         setContentView(root);
 
-        docFile = new File(getFilesDir(), "document.reckon");
-        String text = WELCOME;
-        try {
-            if (docFile.exists()) text = new String(Files.readAllBytes(docFile.toPath()), StandardCharsets.UTF_8);
-        } catch (IOException ignored) {
-        }
-        editor.setText(text);
-        recompute();
+        sheetsDir = new File(getFilesDir(), "sheets");
+        File legacy = new File(getFilesDir(), "document.reckon");
+        String first = Native.str(Native.sheetsPrepare(Native.utf8(sheetsDir.getAbsolutePath()),
+                Native.utf8(legacy.getAbsolutePath()), Native.utf8(WELCOME)));
+        String saved = getSharedPreferences("reckon", MODE_PRIVATE).getString("currentSheet", null);
+        String start = saved != null && new File(sheetsDir, saved).exists() ? saved : first;
         editor.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void afterTextChanged(Editable s) {
                 recompute();
-                save(s.toString());
+                if (!loading) save(s.toString());
             }
         });
+        if (start != null) load(start);
         status.setText("Rates: " + Native.str(Native.ratesSource(engine)));
         if (Native.ratesStale(engine)) refreshRates();
     }
@@ -136,6 +160,8 @@ public final class MainActivity extends Activity {
         statusBar.setBackgroundColor(t.color("status_bg"));
         status.setTextColor(t.color("muted"));
         themeButton.setTextColor(t.color("muted"));
+        sheetButton.setTextColor(t.color("text"));
+        undoButton.setTextColor(t.color("text"));
         themeButton.setText("◐  " + t.name);
         themeButton.setContentDescription("Theme: " + t.name);
         // Dark icons in the system bars on light themes, light icons on dark ones.
@@ -173,11 +199,96 @@ public final class MainActivity extends Activity {
         editor.setOutput(results, spans);
     }
 
+    /** Writes the open sheet through a temporary file, so it is never half-written. */
     private void save(String text) {
-        try (FileOutputStream f = new FileOutputStream(docFile)) {
+        if (current.isEmpty()) return;
+        File tmp = new File(sheetsDir, "." + current + ".tmp");
+        try (FileOutputStream f = new FileOutputStream(tmp)) {
             f.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return;
+        }
+        if (tmp.renameTo(new File(sheetsDir, current))) updateSheetButton(text);
+    }
+
+    private void updateSheetButton(String text) {
+        String title = "Untitled";
+        for (String line : text.split("\n")) {
+            String l = line.trim().replaceFirst("^#+", "").replaceFirst("^//", "").trim();
+            if (!l.isEmpty()) {
+                title = l;
+                break;
+            }
+        }
+        sheetButton.setText("▤  " + title);
+        sheetButton.setContentDescription("Sheets. Current: " + title);
+    }
+
+    /** Opens `file`, first renaming the sheet being left to match its title. */
+    private void load(String file) {
+        if (!current.isEmpty() && !current.equals(file)) {
+            Native.sheetTidy(Native.utf8(sheetsDir.getAbsolutePath()), Native.utf8(current));
+        }
+        String text = "";
+        try {
+            text = new String(Files.readAllBytes(new File(sheetsDir, file).toPath()), StandardCharsets.UTF_8);
         } catch (IOException ignored) {
         }
+        current = file;
+        getSharedPreferences("reckon", MODE_PRIVATE).edit().putString("currentSheet", file).apply();
+        loading = true;
+        editor.setText(text);
+        loading = false;
+        editor.setSelection(text.length());
+        recompute();
+        updateSheetButton(text);
+    }
+
+    private void newSheet() {
+        String file = Native.str(Native.sheetCreate(Native.utf8(sheetsDir.getAbsolutePath()), Native.utf8("# Untitled\n")));
+        if (file == null) return;
+        load(file);
+        // Select the title so typing replaces it.
+        editor.requestFocus();
+        editor.setSelection(2, "# Untitled".length());
+        getSystemService(android.view.inputmethod.InputMethodManager.class)
+                .showSoftInput(editor, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void deleteSheet(String file) {
+        String title = file.replaceFirst("\\.reckon$", "");
+        String path = Native.str(Native.sheetTrash(Native.utf8(sheetsDir.getAbsolutePath()), Native.utf8(file)));
+        if (path == null) return;
+        trashed = path;
+        if (file.equals(current)) {
+            current = "";
+            List<SheetsPicker.Info> rest = SheetsPicker.list(sheetsDir);
+            if (rest.isEmpty()) newSheet(); else load(rest.get(0).file);
+        }
+        status.setText("Deleted “" + title + "”");
+        undoButton.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void undoDelete() {
+        if (trashed == null) return;
+        String file = Native.str(Native.sheetRestore(Native.utf8(sheetsDir.getAbsolutePath()), Native.utf8(trashed)));
+        trashed = null;
+        undoButton.setVisibility(android.view.View.GONE);
+        if (file != null) {
+            load(file);
+            status.setText("Restored");
+        }
+    }
+
+    private SheetsPicker.Host sheetsHost() {
+        return new SheetsPicker.Host() {
+            @Override public File dir() { return sheetsDir; }
+            @Override public String current() { return current; }
+            @Override public ReckonTheme theme() { return themes.resolve(isSystemDark()); }
+            @Override public void open(String file) { load(file); }
+            @Override public void createSheet() { newSheet(); }
+            @Override public void delete(String file) { deleteSheet(file); }
+        };
     }
 
     private void copy(String result) {

@@ -3,12 +3,10 @@
 //! The themes themselves live in `reckon_core::themes`, shared with the
 //! iOS and Android apps.
 
-use std::path::PathBuf;
-
 use gpui::{rgba, FontWeight, Hsla, WindowAppearance};
 use reckon_core::themes::{find, DEFAULT_DARK, DEFAULT_LIGHT};
 pub use reckon_core::themes::{Pattern, THEMES};
-use reckon_core::{paths, Hl};
+use reckon_core::Hl;
 
 /// Resolved colours for drawing.
 #[derive(Clone, Copy)]
@@ -86,7 +84,7 @@ fn is_dark(a: WindowAppearance) -> bool {
 
 /// Which theme to show. The app can follow
 /// the system's light/dark setting with one theme for each, or always use
-/// one theme. Saved in `app.conf` in the data folder.
+/// one theme. Saved in `app.conf` (see `conf.rs`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ThemeChoice {
     pub follow_system: bool,
@@ -107,10 +105,6 @@ impl Default for ThemeChoice {
 }
 
 impl ThemeChoice {
-    fn path() -> Option<PathBuf> {
-        paths::data_dir().map(|d| d.join("app.conf"))
-    }
-
     /// Reads `key = value` lines; unknown keys and theme names are ignored.
     pub fn parse(text: &str) -> ThemeChoice {
         let mut c = ThemeChoice::default();
@@ -144,19 +138,24 @@ impl ThemeChoice {
     }
 
     pub fn load() -> ThemeChoice {
-        Self::path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| Self::parse(&t))
-            .unwrap_or_default()
+        Self::parse(&crate::conf::read())
     }
 
     pub fn save(&self) {
-        if let Some(p) = Self::path() {
-            if let Some(dir) = p.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(p, self.serialize());
-        }
+        crate::conf::set(&[
+            (
+                "theme_mode",
+                if self.follow_system {
+                    "system"
+                } else {
+                    "fixed"
+                }
+                .into(),
+            ),
+            ("theme", THEMES[self.fixed].name.into()),
+            ("light_theme", THEMES[self.light].name.into()),
+            ("dark_theme", THEMES[self.dark].name.into()),
+        ]);
     }
 
     /// The choice that picker row `row` previews: row 0 is "Match

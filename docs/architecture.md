@@ -108,6 +108,40 @@ in `rates.txt`.
 
 Keyboard shortcuts use `cmd` on macOS and `ctrl` elsewhere (see `main.rs`).
 
+## Sheets
+
+`reckon_core::sheets` stores sheets as a folder of plain `.reckon` files,
+and every app (desktop, iOS through `reckon_sheets_*` in the C interface,
+Android through the same functions over JNI) uses it, so names, titles,
+trash and listing behave the same everywhere.
+
+- The folder listing is the only index: no database, nothing to corrupt or
+  migrate, and any sync tool can carry the folder between devices.
+- A sheet's title is its first line. Files are named after the title when
+  created and renamed only when the user leaves the sheet (`tidy`), so sync
+  tools do not see a stream of renames while someone types.
+- Writes go to a temporary file that is renamed over the sheet, so a sync
+  tool never uploads a half-written file.
+- The apps poll the open sheet's modification time (every 1.5–2 s) and
+  reload it when another device changed it; the folder's own modification
+  time tells them when sheets were added, removed or renamed.
+- Deleting moves a sheet into `.trash` inside the folder; Undo moves it back.
+
+## Quick calc (desktop)
+
+The quick box is the same editor view (`Calc`) in a one-line mode: no sheet,
+no status bar, Enter copies the answer and closes the window, losing focus
+closes it. It opens as a GPUI pop-up window, which on macOS is a
+non-activating panel, so Reckon's main window does not jump in front of the
+app you were using.
+
+The global shortcut is registered without extra crates (`hotkey.rs`):
+Carbon's `RegisterEventHotKey` on macOS (no accessibility permission),
+`RegisterHotKey` on a message-loop thread on Windows. Linux desktops do not
+offer global shortcuts to apps, so `reckon-app --quick` signals the running
+app over a Unix socket in the data folder; users bind that command in their
+desktop's keyboard settings.
+
 ## Themes
 
 The twelve themes live in the engine (`reckon_core::themes`), so every app

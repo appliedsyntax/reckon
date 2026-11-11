@@ -4,13 +4,18 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod calc;
+mod conf;
+mod hotkey;
+mod input;
 mod theme;
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::sync::mpsc::{channel, Receiver};
 
 use gpui::{
-    px, size, App, AppContext, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem,
-    SharedString, TitlebarOptions, WindowBounds, WindowOptions,
+    point, px, size, App, AppContext, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem,
+    SharedString, TitlebarOptions, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
 
 use calc::*;
@@ -57,6 +62,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(&format!("{m}-o"), Open, ctx),
         KeyBinding::new(&format!("{m}-s"), Export, ctx),
         KeyBinding::new(&format!("{m}-q"), Quit, None),
+        KeyBinding::new(&format!("{m}-n"), NewSheet, ctx),
+        KeyBinding::new(&format!("{m}-p"), FindSheet, ctx),
+        KeyBinding::new(&format!("{m}-\\"), ToggleSidebar, ctx),
+        KeyBinding::new("escape", DismissQuick, ctx),
         // Same chord as Zed's theme selector.
         KeyBinding::new(&format!("{m}-k {m}-t"), ToggleThemePicker, None),
         KeyBinding::new("up", PickerUp, Some("ThemePicker")),
@@ -87,6 +96,7 @@ fn bind_keys(cx: &mut App) {
         ]);
     }
     cx.bind_keys(b);
+    cx.bind_keys(input::bindings());
 }
 
 /// Picks the editor font: a monospaced face so digits and operators line up.
@@ -130,8 +140,14 @@ pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
+                MenuItem::action("New Sheet", NewSheet),
+                MenuItem::action("Find Sheet…", FindSheet),
+                MenuItem::separator(),
                 MenuItem::action("Open…", Open),
                 MenuItem::action("Export…", Export),
+                MenuItem::separator(),
+                MenuItem::action("Choose Sheets Folder…", ChooseSheetsFolder),
+                MenuItem::action("Show Sheets Folder", RevealSheetsFolder),
             ],
         },
         Menu {
@@ -153,10 +169,14 @@ pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
         },
         Menu {
             name: "View".into(),
-            items: vec![MenuItem::submenu(Menu {
-                name: "Theme".into(),
-                items: theme_items(choice),
-            })],
+            items: vec![
+                MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu {
+                    name: "Theme".into(),
+                    items: theme_items(choice),
+                }),
+            ],
         },
     ]
 }
@@ -190,35 +210,160 @@ fn theme_items(choice: &theme::ThemeChoice) -> Vec<MenuItem> {
     items
 }
 
+thread_local! {
+    static MAIN: RefCell<Option<WindowHandle<Calc>>> = const { RefCell::new(None) };
+    static QUICK: RefCell<Option<WindowHandle<Calc>>> = const { RefCell::new(None) };
+    static FONT: RefCell<SharedString> = RefCell::new(SharedString::default());
+}
+
+fn open_main(cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(940.), px(600.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Reckon".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let font = FONT.with(|f| f.borrow().clone());
+    let window = cx
+        .open_window(options, |window, cx| {
+            cx.new(|cx| Calc::new(window, font, false, cx))
+        })
+        .expect("open window");
+    window
+        .update(cx, |view, window, cx| {
+            window.focus(&view.focus_handle(cx));
+            cx.activate(true);
+        })
+        .ok();
+    MAIN.with(|m| *m.borrow_mut() = Some(window));
+}
+
+/// Shows the quick-calc box, or closes it if it is already open.
+fn toggle_quick(cx: &mut App) {
+    if let Some(h) = QUICK.with(|q| q.borrow_mut().take()) {
+        if h.update(cx, |_, window, _| window.remove_window()).is_ok() {
+            return;
+        }
+    }
+    let (w, h) = (px(680.), px(56.));
+    let origin = cx
+        .primary_display()
+        .map(|d| {
+            let b = d.bounds();
+            point(
+                b.origin.x + (b.size.width - w) / 2.,
+                b.origin.y + b.size.height * 0.28,
+            )
+        })
+        .unwrap_or_else(|| point(px(200.), px(200.)));
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, size(w, h)))),
+        titlebar: Some(TitlebarOptions {
+            title: None,
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(-100.), px(-100.))),
+        }),
+        kind: WindowKind::PopUp,
+        is_resizable: false,
+        is_minimizable: false,
+        focus: true,
+        show: true,
+        ..Default::default()
+    };
+    let font = FONT.with(|f| f.borrow().clone());
+    let Ok(window) = cx.open_window(options, |window, cx| {
+        cx.new(|cx| Calc::new(window, font, true, cx))
+    }) else {
+        return;
+    };
+    window
+        .update(cx, |view, window, cx| {
+            window.focus(&view.focus_handle(cx));
+            window.activate_window();
+            // macOS shows the box as a non-activating panel, so Reckon's main
+            // window does not jump to the front; elsewhere the app must be
+            // active for the box to get the keyboard.
+            if !cfg!(target_os = "macos") {
+                cx.activate(true);
+            }
+        })
+        .ok();
+    QUICK.with(|q| *q.borrow_mut() = Some(window));
+}
+
+/// Opens the quick box each time `rx` fires. The wait happens on a
+/// background thread, so nothing polls.
+fn listen_quick(rx: Receiver<()>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut rx = rx;
+        loop {
+            let (got, back) = cx
+                .background_executor()
+                .spawn(async move { (rx.recv(), rx) })
+                .await;
+            rx = back;
+            if got.is_err() || cx.update(toggle_quick).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let quick_only = std::env::args().any(|a| a == "--quick");
+    // `reckon-app --quick`: hand the request to a running app if there is one.
+    #[cfg(unix)]
+    if quick_only && hotkey::socket::ask_running_app() {
+        return;
+    }
+    Application::new().run(move |cx: &mut App| {
         bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(app_menus(&theme::ThemeChoice::load()));
-        let bounds = Bounds::centered(None, size(px(780.), px(580.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Reckon".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
         let font = editor_font(cx);
         if std::env::var_os("RECKON_DEBUG").is_some() {
             eprintln!("reckon-app: editor font {font}");
         }
-        let window = cx
-            .open_window(options, |window, cx| {
-                cx.new(|cx| Calc::new(window, font, cx))
-            })
-            .expect("open window");
-        window
-            .update(cx, |view, window, cx| {
-                window.focus(&view.focus_handle(cx));
-                cx.activate(true);
-            })
-            .ok();
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        FONT.with(|f| *f.borrow_mut() = font);
+
+        if quick_only {
+            // No app running: show just the box and quit when it closes.
+            toggle_quick(cx);
+            cx.on_window_closed(|cx| cx.quit()).detach();
+            return;
+        }
+
+        open_main(cx);
+        let (tx, rx) = channel();
+        #[cfg(unix)]
+        hotkey::socket::listen(tx.clone());
+        let shortcut = conf::get("quick_shortcut").unwrap_or_else(|| hotkey::DEFAULT.into());
+        match hotkey::parse(&shortcut) {
+            Some(sc) => {
+                if let Err(e) = hotkey::register(sc, tx) {
+                    if std::env::var_os("RECKON_DEBUG").is_some() {
+                        eprintln!("reckon-app: quick shortcut {}: {e}", hotkey::label(&sc));
+                    }
+                }
+            }
+            None => eprintln!("reckon-app: quick_shortcut \"{shortcut}\" is not a valid shortcut"),
+        }
+        listen_quick(rx, cx);
+        if std::env::var_os("RECKON_QUICK_ON_START").is_some() {
+            toggle_quick(cx);
+        }
+
+        // Closing the main window quits; closing the quick box does not.
+        cx.on_window_closed(|cx| {
+            let main_open = MAIN.with(|m| m.borrow().map(|h| h.update(cx, |_, _, _| ()).is_ok()));
+            if main_open != Some(true) {
+                cx.quit();
+            }
+        })
+        .detach();
     });
 }

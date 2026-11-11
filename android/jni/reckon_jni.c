@@ -64,6 +64,50 @@ JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_themes(JNIEnv *env, jclass
     return to_bytes(env, reckon_themes());
 }
 
+/* Calls a two-string sheet function and frees the converted inputs. */
+static jbyteArray sheet2(JNIEnv *env, char *(*f)(const char *, const char *), jbyteArray a, jbyteArray b) {
+    char *x = from_bytes(env, a);
+    char *y = from_bytes(env, b);
+    jbyteArray r = to_bytes(env, f(x, y));
+    free(x);
+    free(y);
+    return r;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetsList(JNIEnv *env, jclass c, jbyteArray dir) {
+    char *d = from_bytes(env, dir);
+    jbyteArray r = to_bytes(env, reckon_sheets_list(d));
+    free(d);
+    return r;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetsPrepare(JNIEnv *env, jclass c, jbyteArray dir, jbyteArray legacy, jbyteArray welcome) {
+    char *d = from_bytes(env, dir);
+    char *l = from_bytes(env, legacy);
+    char *w = from_bytes(env, welcome);
+    jbyteArray r = to_bytes(env, reckon_sheets_prepare(d, l, w));
+    free(d);
+    free(l);
+    free(w);
+    return r;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetCreate(JNIEnv *env, jclass c, jbyteArray dir, jbyteArray text) {
+    return sheet2(env, reckon_sheet_create, dir, text);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetTidy(JNIEnv *env, jclass c, jbyteArray dir, jbyteArray file) {
+    return sheet2(env, reckon_sheet_tidy, dir, file);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetTrash(JNIEnv *env, jclass c, jbyteArray dir, jbyteArray file) {
+    return sheet2(env, reckon_sheet_trash, dir, file);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_local_reckon_Native_sheetRestore(JNIEnv *env, jclass c, jbyteArray dir, jbyteArray trashed) {
+    return sheet2(env, reckon_sheet_restore, dir, trashed);
+}
+
 JNIEXPORT jboolean JNICALL Java_local_reckon_Native_ratesStale(JNIEnv *env, jclass c, jlong h) {
     return reckon_rates_stale(ENGINE(h)) ? JNI_TRUE : JNI_FALSE;
 }

@@ -193,9 +193,72 @@ On Windows and Linux, use Ctrl instead of ⌘.
 | Export to a file | ⌘S |
 | Undo / redo | ⌘Z / ⇧⌘Z |
 | Choose a theme | ⌘K then ⌘T (or click the theme name in the status bar) |
+| New sheet | ⌘N |
+| Find a sheet (search) | ⌘P |
+| Show or hide the sheets sidebar | ⌘\\ |
+| Quick calc from any app | ⌃⌥Space (Ctrl+Alt+Space on Windows) |
 
-The document saves automatically. Opening a file copies its text into the
-document but never modifies the original; use Export to write a file.
+Sheets save automatically. Opening a file copies its text into the current
+sheet but never modifies the original; use Export to write a file.
+
+## Sheets
+
+Reckon keeps any number of sheets (separate pages), like a notes app: one
+for a trip budget, one for splitting rent, one for an invoice.
+
+- **Desktop:** the sidebar on the left lists them, newest first. Type in its
+  search box to filter by title or content (↑ ↓ and Enter pick one, Esc
+  clears). **+** or ⌘N makes a new sheet; hover a sheet and click ✕ to
+  delete it, and **Undo** in the status bar brings it back.
+- **iOS and Android:** tap the sheet name at the bottom left. The list has
+  search, **New**, and delete (swipe left on iOS, long-press on Android),
+  with **Undo** in the status bar.
+
+A sheet's title is its first line (`# Trip budget` → "Trip budget"). Each
+sheet is a plain `.reckon` file named after its title; the file is renamed
+when you switch to another sheet, never while you type. Deleted sheets move
+to a `.trash` folder inside the sheets folder rather than being erased.
+
+### Syncing between devices
+
+Sheets are ordinary files, so any folder-syncing service keeps them in step
+across devices; Reckon has no server or account.
+
+- **Desktop:** File › Choose Sheets Folder… (or click the folder name at the
+  bottom of the sidebar) and pick a folder inside iCloud Drive, Dropbox,
+  OneDrive, Google Drive or Syncthing. If the new folder has no sheets yet,
+  your current ones are copied into it. File › Show Sheets Folder opens it.
+- While a sheet is open, Reckon checks every couple of seconds for changes
+  that arrive from another device and reloads it (the status bar says
+  "Updated from another device"); the change can be undone. New, renamed or
+  deleted sheets show up in the list the same way.
+- **iOS:** sheets live in Reckon's iCloud Drive folder when the app is built
+  with the iCloud Documents capability (see building.md); otherwise in
+  Files › On My iPhone › Reckon › Sheets.
+- **Android:** sheets are stored in the app for now; choosing a synced
+  folder is planned.
+
+Edits made on two devices at the same moment are not merged: the last one
+saved wins.
+
+## Quick calc
+
+Press ⌃⌥Space (Ctrl+Alt+Space on Windows) in any app to open a small Reckon
+box over whatever you are doing. Type a calculation, e.g.
+`15% of $240 in EUR`; the answer appears as you type. **Enter** copies the
+answer and closes the box, **Esc** closes it, and clicking elsewhere closes
+it too. Nothing is saved to your sheets.
+
+- Change the shortcut with `quick_shortcut` in `app.conf`, e.g.
+  `quick_shortcut = cmd-shift-space` (modifiers: ctrl, alt/option, shift,
+  cmd/win; key: a letter, digit or `space`). Restart Reckon afterwards.
+- If another app already owns the shortcut, Reckon cannot take it; pick a
+  different one.
+- **Linux:** desktops do not let apps grab global shortcuts (Wayland forbids
+  it), so bind the command `reckon-app --quick` to a key in your desktop's
+  keyboard settings (GNOME: Settings › Keyboard › Custom Shortcuts; KDE:
+  System Settings › Shortcuts). It opens the box in the running app, or on
+  its own if Reckon is not running. The same command works on macOS.
 
 ## Themes
 
@@ -253,8 +316,10 @@ dark_theme = Nocturne
 | Windows | `%APPDATA%\Reckon` |
 | Linux | `$XDG_CONFIG_HOME/reckon` or `~/.config/reckon` |
 
-The folder contains `document.reckon` (the app's document), `app.conf`
-(the theme choice), `rates.txt` (cached exchange rates) and `plugins/`. Set `RECKON_HOME` to use a
+The folder contains `sheets/` (your sheets, unless you chose another
+folder), `app.conf` (settings: theme, sheets folder, quick-calc shortcut),
+`rates.txt` (cached exchange rates) and `plugins/`. An old single
+`document.reckon` is moved into the sheets folder on first start. Set `RECKON_HOME` to use a
 different folder.
 
 ## CLI

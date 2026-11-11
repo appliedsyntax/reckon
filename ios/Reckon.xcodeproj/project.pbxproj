@@ -13,6 +13,7 @@
 		AA0000000000000000000104 /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000004 /* Engine.swift */; };
 		AA0000000000000000000107 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* Theme.swift */; };
 		AA0000000000000000000108 /* ThemePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000008 /* ThemePicker.swift */; };
+		AA0000000000000000000109 /* Sheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000009 /* Sheets.swift */; };
 		AA0000000000000000000106 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -25,6 +26,7 @@
 		AA0000000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA0000000000000000000007 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AA0000000000000000000008 /* ThemePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemePicker.swift; sourceTree = "<group>"; };
+		AA0000000000000000000009 /* Sheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sheets.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* Reckon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reckon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -56,6 +58,7 @@
 				AA0000000000000000000004 /* Engine.swift */,
 				AA0000000000000000000007 /* Theme.swift */,
 				AA0000000000000000000008 /* ThemePicker.swift */,
+				AA0000000000000000000009 /* Sheets.swift */,
 				AA0000000000000000000005 /* Reckon-Bridging-Header.h */,
 				AA0000000000000000000006 /* Assets.xcassets */,
 			);
@@ -164,6 +167,7 @@
 				AA0000000000000000000104 /* Engine.swift in Sources */,
 				AA0000000000000000000107 /* Theme.swift in Sources */,
 				AA0000000000000000000108 /* ThemePicker.swift in Sources */,
+				AA0000000000000000000109 /* Sheets.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +223,8 @@
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../crates/reckon-ffi/include";
 				INFOPLIST_KEY_CFBundleDisplayName = Reckon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -249,6 +255,8 @@
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../crates/reckon-ffi/include";
 				INFOPLIST_KEY_CFBundleDisplayName = Reckon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

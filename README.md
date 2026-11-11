@@ -39,6 +39,11 @@ native front ends over the same engine. None of the apps use web views.
 - Variables, `prev`, `sum`/`total`, `avg`/`average`, labels, headers and comments
 - Functions: `sqrt`, `root`, `log`, `ln`, `round`, trigonometry, …
 - Plugins: plain-text `.reckon` files that add units, variables and functions
+- Sheets: any number of pages with a searchable sidebar, stored as plain
+  files in a folder you choose, so iCloud Drive, Dropbox or Syncthing sync
+  them between devices
+- Quick calc: ⌃⌥Space opens a small Reckon box over any app; Enter copies
+  the answer
 - Twelve original themes on every platform, from graph-paper Paper to
   green-screen Phosphor, with a live-preview picker and a match-system mode
 

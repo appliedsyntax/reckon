@@ -18,6 +18,9 @@ use reckon_core::{paths, Engine, Hl, LineKind, LineOutput, Rates};
 
 use crate::theme::{Pattern, Theme, ThemeChoice, THEMES};
 
+mod sheets_ui;
+use sheets_ui::SheetsState;
+
 actions!(
     reckon,
     [
@@ -60,6 +63,12 @@ actions!(
         Export,
         Quit,
         ShowCharacterPalette,
+        NewSheet,
+        ToggleSidebar,
+        FindSheet,
+        ChooseSheetsFolder,
+        RevealSheetsFolder,
+        DismissQuick,
         ToggleThemePicker,
         MatchSystemTheme,
         PickerUp,
@@ -192,27 +201,43 @@ pub struct Calc {
     picker: Option<Picker>,
     picker_scroll: ScrollHandle,
     status: Option<(SharedString, Instant)>,
-    doc_path: Option<PathBuf>,
+    /// The sheets folder and sidebar (None in the quick-calc box).
+    sheets: Option<SheetsState>,
+    /// The quick-calc box: one line, nothing saved, Enter copies the result.
+    quick: bool,
+    /// Quick box only: the window has been active, so losing focus closes it.
+    was_active: bool,
     /// Editor font family (see `editor_font` in main.rs).
     font: SharedString,
     _subs: Vec<Subscription>,
 }
 
 impl Calc {
-    pub fn new(window: &mut Window, font: SharedString, cx: &mut Context<Self>) -> Self {
-        let doc_path = paths::data_dir().map(|d| d.join("document.reckon"));
-        let text = doc_path
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .unwrap_or_else(|| WELCOME.to_string());
+    /// The main window (`quick == false`) or the quick-calc box.
+    pub fn new(
+        window: &mut Window,
+        font: SharedString,
+        quick: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let engine = Engine::with_user_data();
-        let outputs = engine.evaluate(&text);
-        let sub = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
+        let mut subs = vec![cx.observe_window_appearance(window, |_, _, cx| cx.notify())];
+        if quick {
+            subs.push(
+                cx.observe_window_activation(window, |this: &mut Calc, window, _| {
+                    if window.is_window_active() {
+                        this.was_active = true;
+                    } else if this.was_active {
+                        window.remove_window();
+                    }
+                }),
+            );
+        }
         let choice = ThemeChoice::load();
         let mut calc = Calc {
             focus: cx.focus_handle(),
-            sel: text.len()..text.len(),
-            text,
+            sel: 0..0,
+            text: String::new(),
             reversed: false,
             marked: None,
             preferred_x: None,
@@ -220,7 +245,7 @@ impl Calc {
             redo: Vec::new(),
             typing: false,
             engine,
-            outputs,
+            outputs: Vec::new(),
             layouts: Vec::new(),
             bounds: None,
             scroll: ScrollHandle::new(),
@@ -231,17 +256,27 @@ impl Calc {
             picker: None,
             picker_scroll: ScrollHandle::new(),
             status: None,
-            doc_path,
+            sheets: None,
+            quick,
+            was_active: false,
             font,
-            _subs: vec![sub],
+            _subs: subs,
         };
-        if !calc.engine.plugin_errors.is_empty() {
-            let msg = format!("Plugin error: {}", calc.engine.plugin_errors[0]);
-            calc.set_status(msg);
+        if !quick {
+            let text = calc
+                .init_sheets(window, cx)
+                .unwrap_or_else(|| WELCOME.to_string());
+            calc.sel = text.len()..text.len();
+            calc.text = text;
+            if !calc.engine.plugin_errors.is_empty() {
+                let msg = format!("Plugin error: {}", calc.engine.plugin_errors[0]);
+                calc.set_status(msg);
+            }
+            if calc.engine.rates_stale() {
+                calc.refresh_rates(cx);
+            }
         }
-        if calc.engine.rates_stale() {
-            calc.refresh_rates(cx);
-        }
+        calc.outputs = calc.engine.evaluate(&calc.text);
         calc
     }
 
@@ -447,12 +482,7 @@ impl Calc {
 
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.outputs = self.engine.evaluate(&self.text);
-        if let Some(p) = &self.doc_path {
-            if let Some(dir) = p.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(p, &self.text);
-        }
+        self.save_sheet();
         cx.notify();
     }
 
@@ -922,8 +952,45 @@ impl Calc {
         self.reversed = false;
         cx.notify();
     }
-    fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
+    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick {
+            // Enter copies the answer and closes the box.
+            let result = self.outputs.iter().rev().find_map(|o| o.text.clone());
+            if let Some(r) = result {
+                cx.write_to_clipboard(ClipboardItem::new_string(r));
+                window.remove_window();
+            }
+            return;
+        }
         self.replace(self.sel.clone(), "\n", cx);
+    }
+
+    fn dismiss_quick(&mut self, _: &DismissQuick, window: &mut Window, _: &mut Context<Self>) {
+        if self.quick {
+            window.remove_window();
+        }
+    }
+
+    // Sheets actions (the work is in sheets_ui.rs).
+    fn new_sheet_a(&mut self, _: &NewSheet, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_sheet(window, cx);
+    }
+    fn toggle_sidebar_a(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_sidebar(cx);
+    }
+    fn find_sheet_a(&mut self, _: &FindSheet, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_sheet(window, cx);
+    }
+    fn choose_folder_a(
+        &mut self,
+        _: &ChooseSheetsFolder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_folder(window, cx);
+    }
+    fn reveal_folder_a(&mut self, _: &RevealSheetsFolder, _: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_folder(cx);
     }
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.sel.is_empty() {
@@ -1614,6 +1681,12 @@ impl Render for Calc {
             .as_ref()
             .map(|p| self.render_picker(p, &theme, cx));
         let theme_label = self.theme_label(window);
+        let sidebar = self.render_sidebar(&theme, cx);
+        let can_undo_delete = self.sheets.as_ref().is_some_and(|s| s.trashed.is_some())
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|(m, _)| m.starts_with("Deleted"));
 
         let rows = self.text.split('\n').count();
         let cur_row = self.row_of(self.cursor());
@@ -1704,6 +1777,12 @@ impl Render for Calc {
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::export))
             .on_action(cx.listener(Self::show_character_palette))
+            .on_action(cx.listener(Self::new_sheet_a))
+            .on_action(cx.listener(Self::toggle_sidebar_a))
+            .on_action(cx.listener(Self::find_sheet_a))
+            .on_action(cx.listener(Self::choose_folder_a))
+            .on_action(cx.listener(Self::reveal_folder_a))
+            .on_action(cx.listener(Self::dismiss_quick))
             .relative()
             .size_full()
             .flex()
@@ -1713,73 +1792,112 @@ impl Render for Calc {
             .font_family(self.font.clone())
             .text_size(FONT_SIZE)
             .line_height(LINE_H)
+            .when(self.quick, |d| {
+                d.rounded(px(10.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .overflow_hidden()
+            })
             .child(
                 div()
-                    .id("scroll")
                     .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .children(sidebar)
                     .child(
                         div()
-                            .relative()
-                            .flex()
-                            .flex_row()
-                            .w_full()
-                            .min_h_full()
-                            .cursor(CursorStyle::IBeam)
-                            .child(backdrop(theme))
-                            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                            .on_mouse_move(cx.listener(Self::on_mouse_move))
+                            .id("scroll")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .child(EditorElement { calc: cx.entity() }),
-                            )
-                            .child(divider(theme))
-                            .child(
-                                div()
-                                    .w(RESULTS_W)
-                                    .flex_none()
-                                    .pt(PAD_Y)
-                                    .pr(PAD_X)
-                                    .pl(px(12.))
-                                    .cursor(CursorStyle::Arrow)
-                                    .children(results),
+                                    .relative()
+                                    .flex()
+                                    .flex_row()
+                                    .w_full()
+                                    .min_h_full()
+                                    .cursor(CursorStyle::IBeam)
+                                    .child(backdrop(theme))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_mouse_down),
+                                    )
+                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                                    .on_mouse_up_out(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_mouse_up),
+                                    )
+                                    .on_mouse_move(cx.listener(Self::on_mouse_move))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .child(EditorElement { calc: cx.entity() }),
+                                    )
+                                    .child(divider(theme))
+                                    .child(
+                                        div()
+                                            .w(RESULTS_W)
+                                            .flex_none()
+                                            .pt(PAD_Y)
+                                            .pr(PAD_X)
+                                            .pl(px(12.))
+                                            .cursor(CursorStyle::Arrow)
+                                            .children(results),
+                                    ),
                             ),
                     ),
             )
-            .child(
-                div()
-                    .h(px(26.))
-                    .flex_none()
-                    .px(PAD_X)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_t_1()
-                    .border_color(theme.divider)
-                    .bg(theme.status_bg)
-                    .font_family(".SystemUIFont")
-                    .text_size(px(11.))
-                    .text_color(theme.muted)
-                    .child(status)
-                    .child(
-                        div().flex().items_center().gap(px(14.)).child(hint).child(
-                            div()
-                                .id("theme-button")
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(theme.text))
-                                .child(theme_label)
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.toggle_theme_picker(&ToggleThemePicker, window, cx)
-                                })),
+            .when(!self.quick, |d| {
+                d.child(
+                    div()
+                        .h(px(26.))
+                        .flex_none()
+                        .px(PAD_X)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_t_1()
+                        .border_color(theme.divider)
+                        .bg(theme.status_bg)
+                        .font_family(".SystemUIFont")
+                        .text_size(px(11.))
+                        .text_color(theme.muted)
+                        .child(div().flex().items_center().gap(px(10.)).child(status).when(
+                            can_undo_delete,
+                            |d| {
+                                d.child(
+                                    div()
+                                        .id("undo-delete")
+                                        .text_color(theme.text)
+                                        .cursor_pointer()
+                                        .hover(|s| s.underline())
+                                        .child("Undo")
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.undo_trash(window, cx)
+                                            },
+                                        )),
+                                )
+                            },
+                        ))
+                        .child(
+                            div().flex().items_center().gap(px(14.)).child(hint).child(
+                                div()
+                                    .id("theme-button")
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme.text))
+                                    .child(theme_label)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.toggle_theme_picker(&ToggleThemePicker, window, cx)
+                                    })),
+                            ),
                         ),
-                    ),
-            )
+                )
+            })
             .children(picker)
     }
 }

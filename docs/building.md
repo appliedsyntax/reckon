@@ -84,4 +84,20 @@ exchange rates themselves and pass the JSON to the engine
 (`reckon_set_local_zone`). Android's packed `tzdata` file is read directly,
 so named zones get correct daylight saving time there too.
 
+### iCloud sync for sheets (iOS)
+
+The iOS app keeps sheets in its iCloud Drive folder when iCloud is
+available, and in Documents/Sheets (visible in the Files app) otherwise.
+iCloud needs a paid Apple Developer team, so it is off in the project as
+shipped. To turn it on:
+
+1. In Xcode, select the Reckon target › Signing & Capabilities, choose your
+   team, add **iCloud** and tick **iCloud Documents**, and add a container
+   (for example `iCloud.<your bundle id>`).
+2. To show the folder in iCloud Drive on a Mac, add an
+   `NSUbiquitousContainers` entry for that container to the target's
+   Info.plist, with `NSUbiquitousContainerIsDocumentScopePublic` set to YES.
+3. Build to a device signed into iCloud. On a Mac, choose that iCloud Drive
+   folder as the desktop app's sheets folder to share sheets with the phone.
+
 See [packaging.md](packaging.md) for building and signing every package.

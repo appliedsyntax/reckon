@@ -8,7 +8,9 @@
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::ptr;
 
-use reckon_core::{paths, themes, Engine, Hl, Rates};
+use std::path::Path;
+
+use reckon_core::{paths, sheets, themes, Engine, Hl, Rates};
 
 pub struct ReckonEngine(Engine);
 
@@ -21,7 +23,9 @@ unsafe fn input<'a>(p: *const c_char) -> Option<&'a str> {
 }
 
 fn output(s: String) -> *mut c_char {
-    CString::new(s.replace('\0', "")).map(CString::into_raw).unwrap_or(ptr::null_mut())
+    CString::new(s.replace('\0', ""))
+        .map(CString::into_raw)
+        .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]
@@ -40,18 +44,29 @@ pub unsafe extern "C" fn reckon_engine_free(engine: *mut ReckonEngine) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn reckon_set_local_zone(engine: *mut ReckonEngine, iana: *const c_char, offset_seconds: c_int) {
+pub unsafe extern "C" fn reckon_set_local_zone(
+    engine: *mut ReckonEngine,
+    iana: *const c_char,
+    offset_seconds: c_int,
+) {
     if let (Some(e), Some(name)) = (engine.as_mut(), input(iana)) {
         e.0.set_local_zone(name, offset_seconds);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn reckon_evaluate(engine: *mut ReckonEngine, document: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn reckon_evaluate(
+    engine: *mut ReckonEngine,
+    document: *const c_char,
+) -> *mut c_char {
     let (Some(e), Some(doc)) = (engine.as_ref(), input(document)) else {
         return output(String::new());
     };
-    let lines: Vec<String> = e.0.evaluate(doc).into_iter().map(|o| o.text.unwrap_or_default()).collect();
+    let lines: Vec<String> =
+        e.0.evaluate(doc)
+            .into_iter()
+            .map(|o| o.text.unwrap_or_default())
+            .collect();
     output(lines.join("\n"))
 }
 
@@ -118,6 +133,70 @@ pub extern "C" fn reckon_themes() -> *mut c_char {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn reckon_sheets_list(dir: *const c_char) -> *mut c_char {
+    output(input(dir).map_or_else(|| "[]".into(), |d| sheets::list_json(Path::new(d))))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_sheets_prepare(
+    dir: *const c_char,
+    legacy: *const c_char,
+    welcome: *const c_char,
+) -> *mut c_char {
+    let Some(d) = input(dir) else {
+        return ptr::null_mut();
+    };
+    let legacy = input(legacy).map(Path::new);
+    match sheets::prepare(Path::new(d), legacy, input(welcome).unwrap_or("")) {
+        Ok(name) => output(name),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_sheet_create(
+    dir: *const c_char,
+    text: *const c_char,
+) -> *mut c_char {
+    let (Some(d), Some(t)) = (input(dir), input(text)) else {
+        return ptr::null_mut();
+    };
+    sheets::create(Path::new(d), t).map_or(ptr::null_mut(), output)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_sheet_tidy(dir: *const c_char, file: *const c_char) -> *mut c_char {
+    let (Some(d), Some(f)) = (input(dir), input(file)) else {
+        return ptr::null_mut();
+    };
+    sheets::tidy(Path::new(d), f).map_or(ptr::null_mut(), output)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_sheet_trash(
+    dir: *const c_char,
+    file: *const c_char,
+) -> *mut c_char {
+    let (Some(d), Some(f)) = (input(dir), input(file)) else {
+        return ptr::null_mut();
+    };
+    sheets::trash(Path::new(d), f).map_or(ptr::null_mut(), |p| {
+        output(p.to_string_lossy().into_owned())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reckon_sheet_restore(
+    dir: *const c_char,
+    trashed: *const c_char,
+) -> *mut c_char {
+    let (Some(d), Some(t)) = (input(dir), input(trashed)) else {
+        return ptr::null_mut();
+    };
+    sheets::restore(Path::new(d), Path::new(t)).map_or(ptr::null_mut(), output)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn reckon_rates_stale(engine: *const ReckonEngine) -> c_int {
     engine.as_ref().map_or(1, |e| e.0.rates_stale() as c_int)
 }
@@ -138,8 +217,12 @@ pub unsafe extern "C" fn reckon_apply_rates(
     fiat_json: *const c_char,
     crypto_json: *const c_char,
 ) -> *mut c_char {
-    let Some(e) = engine.as_mut() else { return output("no engine".into()) };
-    let Some(fiat) = input(fiat_json) else { return output("missing fiat rates".into()) };
+    let Some(e) = engine.as_mut() else {
+        return output("no engine".into());
+    };
+    let Some(fiat) = input(fiat_json) else {
+        return output("missing fiat rates".into());
+    };
     match Rates::from_responses(fiat, input(crypto_json)).and_then(|r| e.0.apply_rates(r)) {
         Ok(()) => ptr::null_mut(),
         Err(err) => output(err),
@@ -148,7 +231,12 @@ pub unsafe extern "C" fn reckon_apply_rates(
 
 #[no_mangle]
 pub unsafe extern "C" fn reckon_rates_source(engine: *const ReckonEngine) -> *mut c_char {
-    output(engine.as_ref().map(|e| e.0.rates().source.clone()).unwrap_or_default())
+    output(
+        engine
+            .as_ref()
+            .map(|e| e.0.rates().source.clone())
+            .unwrap_or_default(),
+    )
 }
 
 #[no_mangle]
@@ -180,10 +268,17 @@ mod tests {
             assert!(lines[1].starts_with("6\t0,1,variable;"), "{}", lines[1]);
             // "×" is 2 bytes in UTF-8 but one UTF-16 unit, so "3" is at 8
             // (byte 9). Likewise "€" (3 bytes) puts "5" at 1.
-            assert!(lines[1].ends_with("6,1,operator;8,1,number"), "{}", lines[1]);
+            assert!(
+                lines[1].ends_with("6,1,operator;8,1,number"),
+                "{}",
+                lines[1]
+            );
             assert!(lines[2].contains("1,1,number"), "{}", lines[2]);
             let json = reckon_themes();
-            assert!(CStr::from_ptr(json).to_str().unwrap().contains("\"name\":\"Paper\""));
+            assert!(CStr::from_ptr(json)
+                .to_str()
+                .unwrap()
+                .contains("\"name\":\"Paper\""));
             reckon_string_free(json);
             let err = reckon_apply_rates(e, CString::new("{}").unwrap().as_ptr(), ptr::null());
             assert!(!err.is_null());

@@ -39,6 +39,24 @@ char *reckon_evaluate_highlighted(ReckonEngine *engine, const char *document);
  * block_cursor and colors (an object of "#rrggbbaa" strings). */
 char *reckon_themes(void);
 
+/* Sheets: a folder of .reckon files (see reckon_core::sheets). A sheet's
+ * title is its first non-empty line. Returned names are file names inside
+ * `dir`; NULL means the operation failed. */
+
+/* JSON array of {file, title, preview, modified}, newest first. */
+char *reckon_sheets_list(const char *dir);
+/* Creates `dir` if needed, moves `legacy` (an old single document; may be
+ * NULL) into it, or adds a first sheet holding `welcome` when the folder is
+ * empty. Returns the sheet to open. */
+char *reckon_sheets_prepare(const char *dir, const char *legacy, const char *welcome);
+/* New sheet named after its first line. */
+char *reckon_sheet_create(const char *dir, const char *text);
+/* Renames the file to match its current title (call when leaving a sheet). */
+char *reckon_sheet_tidy(const char *dir, const char *file);
+/* Moves the sheet to dir/.trash; returns its path there for restore. */
+char *reckon_sheet_trash(const char *dir, const char *file);
+char *reckon_sheet_restore(const char *dir, const char *trashed_path);
+
 /* 1 when exchange rates are built-in or older than 12 hours. */
 int reckon_rates_stale(const ReckonEngine *engine);
 
