@@ -17,7 +17,7 @@ OUT="$ROOT/dist"
 WORK="$ROOT/target/package-linux"
 rm -rf "$WORK" && mkdir -p "$WORK" "$OUT"
 
-cargo build --release -p reckon-app -p reckon-cli
+cargo build --release --locked -p reckon-app -p reckon-cli
 
 install_tree() { # $1 = prefix root
   install -Dm755 target/release/reckon "$1/bin/reckon"

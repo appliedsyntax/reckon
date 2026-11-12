@@ -12,7 +12,7 @@ $Out = Join-Path $Root "dist"
 $Work = Join-Path $Root "target\package-windows"
 $Stage = Join-Path $Work "Reckon"
 
-cargo build --release -p reckon-app -p reckon-cli
+cargo build --release --locked -p reckon-app -p reckon-cli
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue

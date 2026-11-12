@@ -395,15 +395,36 @@ pub mod socket {
     use std::path::PathBuf;
     use std::sync::mpsc::Sender;
 
-    /// `quick.sock` in the data folder, or in the temp folder when that path
-    /// is too long for a socket (about 104 bytes on macOS).
+    /// `quick.sock` in the data folder. When that path is too long for a
+    /// socket (about 104 bytes on macOS), it goes in a folder only this user
+    /// can use: the session's runtime folder, or a private folder under the
+    /// temp folder. A plain name in a shared `/tmp` would let another user
+    /// of the machine put their own socket there first.
     fn path() -> Option<PathBuf> {
-        let p = reckon_core::paths::data_dir()?.join("quick.sock");
+        let data = reckon_core::paths::data_dir()?;
+        let p = data.join("quick.sock");
         if p.as_os_str().len() < 100 {
             return Some(p);
         }
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+            return Some(PathBuf::from(runtime).join("reckon-quick.sock"));
+        }
         let user = std::env::var("USER").unwrap_or_default();
-        Some(std::env::temp_dir().join(format!("reckon-quick-{user}.sock")))
+        let dir = std::env::temp_dir().join(format!("reckon-{user}"));
+        private_dir(&dir, &data).then(|| dir.join("quick.sock"))
+    }
+
+    /// Makes `dir` if needed and checks that it is a real folder (not a
+    /// link), owned by the owner of the data folder, that nobody else can
+    /// enter.
+    fn private_dir(dir: &std::path::Path, data: &std::path::Path) -> bool {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
+        let (Ok(meta), Ok(owner)) = (std::fs::symlink_metadata(dir), std::fs::metadata(data))
+        else {
+            return false;
+        };
+        meta.file_type().is_dir() && meta.uid() == owner.uid() && meta.mode() & 0o077 == 0
     }
 
     /// Asks a running app to show the quick box. False when none answers.

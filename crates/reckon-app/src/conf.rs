@@ -32,6 +32,12 @@ pub fn get(key: &str) -> Option<String> {
 pub fn with(text: &str, pairs: &[(&str, String)]) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     for (key, val) in pairs {
+        // One setting per line: a value with a line break in it (a sheet
+        // file name can contain one) must not be able to add other settings.
+        let val: String = val
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         let line = format!("{key} = {val}");
         match lines
             .iter()
@@ -68,5 +74,19 @@ mod tests {
             "theme = Ember\n# note\nsheets_folder = /x\nnew_key = 1\n"
         );
         assert_eq!(value(&t, "sheets_folder"), Some("/x"));
+    }
+
+    #[test]
+    fn a_value_cannot_add_other_settings() {
+        // A sheet's file name can contain a line break.
+        let t = with(
+            "",
+            &[(
+                "current_sheet",
+                "a\nsheets_folder = /evil\r\nb.reckon".into(),
+            )],
+        );
+        assert_eq!(t.lines().count(), 1);
+        assert_eq!(value(&t, "sheets_folder"), None);
     }
 }

@@ -23,13 +23,13 @@ APP="$WORK/Reckon.app"
 if [[ "${UNIVERSAL:-0}" == "1" ]]; then
   ARCH="universal"
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
-    cargo build --release --target "$t" -p reckon-app -p reckon-cli
+    cargo build --release --locked --target "$t" -p reckon-app -p reckon-cli
   done
   BIN_APP=("target/aarch64-apple-darwin/release/reckon-app" "target/x86_64-apple-darwin/release/reckon-app")
   BIN_CLI=("target/aarch64-apple-darwin/release/reckon" "target/x86_64-apple-darwin/release/reckon")
 else
   ARCH="$(uname -m)"
-  cargo build --release -p reckon-app -p reckon-cli
+  cargo build --release --locked -p reckon-app -p reckon-cli
   BIN_APP=("target/release/reckon-app")
   BIN_CLI=("target/release/reckon")
 fi

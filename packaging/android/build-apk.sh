@@ -50,7 +50,7 @@ for abi in ${ANDROID_ABIS:-arm64-v8a x86_64}; do
   clang_triple="${triple/armv7/armv7a}"
   CC="$LLVM/${clang_triple}${MIN_SDK}-clang"
   env_triple="$(echo "$triple" | tr 'a-z-' 'A-Z_')"
-  env "CARGO_TARGET_${env_triple}_LINKER=$CC" cargo build --release -p reckon-ffi --target "$triple"
+  env "CARGO_TARGET_${env_triple}_LINKER=$CC" cargo build --release --locked -p reckon-ffi --target "$triple"
   mkdir -p "$WORK/stage/lib/$abi"
   "$CC" -shared -fPIC -O2 -s \
     -I crates/reckon-ffi/include android/jni/reckon_jni.c \

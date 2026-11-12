@@ -432,13 +432,36 @@ pub struct Parser<'a> {
     items: &'a [It],
     pos: usize,
     reg: &'a Registry,
+    /// How deeply the parser has recursed (see [`MAX_DEPTH`]).
+    depth: usize,
 }
+
+/// Deepest nesting of parentheses, signs and powers that is parsed. Without
+/// a limit, a line of thousands of `(` (in a sheet that arrived from a
+/// shared folder, say) would overflow the stack and crash the app.
+const MAX_DEPTH: usize = 96;
 
 type PResult = Result<Expr, String>;
 
 impl<'a> Parser<'a> {
     pub fn new(items: &'a [It], reg: &'a Registry) -> Self {
-        Parser { items, pos: 0, reg }
+        Parser {
+            items,
+            pos: 0,
+            reg,
+            depth: 0,
+        }
+    }
+
+    /// Runs `f` one level deeper, failing if the expression nests too far.
+    fn nested(&mut self, f: impl FnOnce(&mut Self) -> PResult) -> PResult {
+        if self.depth >= MAX_DEPTH {
+            return Err("expression is nested too deeply".into());
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     fn peek(&self) -> Option<&Item> {
@@ -682,6 +705,10 @@ impl<'a> Parser<'a> {
 
     /// `X% of Y`, `X% on Y`, `X% off Y`, and `... of what is Y`.
     fn parse_pct(&mut self) -> PResult {
+        self.nested(Self::parse_pct_inner)
+    }
+
+    fn parse_pct_inner(&mut self) -> PResult {
         let lhs = self.parse_unary()?;
         let op = match self.peek() {
             Some(Item::Kw(Kw::Of)) => Pct::Of,
@@ -702,7 +729,13 @@ impl<'a> Parser<'a> {
         Ok(Expr::PctOp(op, Box::new(lhs), Box::new(rhs)))
     }
 
+    /// Every operand passes through here, so this bounds all recursion:
+    /// parentheses, function arguments, signs and powers.
     fn parse_unary(&mut self) -> PResult {
+        self.nested(Self::parse_unary_inner)
+    }
+
+    fn parse_unary_inner(&mut self) -> PResult {
         if self.is_sym('-') || self.is_kw(Kw::Minus) {
             self.pos += 1;
             return Ok(Expr::Neg(Box::new(self.parse_unary()?)));

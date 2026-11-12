@@ -11,6 +11,6 @@ esac
 if [ "${CONFIGURATION:-Debug}" = "Release" ]; then FLAGS="--release"; DIR=release; else FLAGS=""; DIR=debug; fi
 cd "$SRCROOT/.."
 # Xcode exports SDK settings that confuse cargo's host build scripts.
-env -u SDKROOT -u LIBRARY_PATH cargo build -p reckon-ffi --target "$TARGET" $FLAGS
+env -u SDKROOT -u LIBRARY_PATH cargo build --locked -p reckon-ffi --target "$TARGET" $FLAGS
 mkdir -p "$TARGET_TEMP_DIR/rust"
 cp "target/$TARGET/$DIR/libreckon_ffi.a" "$TARGET_TEMP_DIR/rust/libreckon_ffi.a"

@@ -731,6 +731,13 @@ impl<'a> Eval<'a> {
         if self.depth > 32 {
             return Err("functions nested too deeply".into());
         }
+        let calls = self
+            .eng
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if calls >= crate::MAX_CALLS {
+            return Err("too many function calls".into());
+        }
         if args.len() != f.params.len() {
             return Err(format!(
                 "expected {} argument(s), got {}",

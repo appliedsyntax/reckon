@@ -10,16 +10,77 @@
 //! [tidied](tidy), never while the user is typing, so sync tools do not see
 //! a storm of renames.
 
+//!
+//! The folder may be shared or synced, so its contents are not trusted:
+//! only regular files are read or replaced (never symbolic links or
+//! devices), sizes are capped, and writes go through a temporary file that
+//! is created exclusively.
+
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const EXTENSION: &str = "reckon";
 /// Deleted sheets are moved here (inside the sheets folder) so they can be
 /// restored.
 pub const TRASH: &str = ".trash";
 const MAX_NAME: usize = 60;
+/// Largest sheet that is opened or listed. Sheets are hand-typed text; this
+/// keeps a huge or endless file in the folder from being read into memory.
+pub const MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// How much of a sheet is read to find its title and preview.
+const HEAD_BYTES: u64 = 4096;
+
+fn invalid(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, msg)
+}
+
+/// A sheet's file name must be a plain name inside the folder.
+fn check_name(file: &str) -> io::Result<()> {
+    if file.is_empty() || file.starts_with('.') || file.contains(['/', '\\', '\0']) {
+        return Err(invalid("not a sheet file name"));
+    }
+    Ok(())
+}
+
+/// Opens `path` only if it is an ordinary file of a sensible size. Symbolic
+/// links are refused: in a shared folder one could point at any file the
+/// user can read, or at a device that never ends.
+fn open_regular(path: &Path) -> io::Result<fs::File> {
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(invalid("not a regular file"));
+    }
+    let file = fs::File::open(path)?;
+    // Checked again on the open file, in case the path was swapped.
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(invalid("not a regular file"));
+    }
+    if meta.len() > MAX_BYTES {
+        return Err(invalid("the sheet is too large"));
+    }
+    Ok(file)
+}
+
+fn read_path(path: &Path) -> io::Result<String> {
+    let mut text = String::new();
+    open_regular(path)?
+        .take(MAX_BYTES)
+        .read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// The first few kilobytes of a sheet: enough for its title and preview
+/// without reading every sheet in full each time the folder is listed.
+fn read_head(path: &Path) -> io::Result<String> {
+    let mut head = Vec::new();
+    open_regular(path)?
+        .take(HEAD_BYTES)
+        .read_to_end(&mut head)?;
+    Ok(String::from_utf8_lossy(&head).into_owned())
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sheet {
@@ -113,7 +174,7 @@ pub fn list(dir: &Path) -> Vec<Sheet> {
         .map(|e| e.path())
         .filter(|p| is_sheet(p))
         .filter_map(|p| {
-            let text = fs::read_to_string(&p).ok()?;
+            let text = read_head(&p).ok()?;
             Some(Sheet {
                 file: p.file_name()?.to_str()?.to_string(),
                 title: title_of(&text),
@@ -136,7 +197,7 @@ pub fn search(dir: &Path, sheets: &[Sheet], query: &str) -> Vec<Sheet> {
         .iter()
         .filter(|s| {
             s.title.to_lowercase().contains(&q)
-                || fs::read_to_string(dir.join(&s.file))
+                || read(dir, &s.file)
                     .map(|t| t.to_lowercase().contains(&q))
                     .unwrap_or(false)
         })
@@ -162,16 +223,67 @@ fn free_name(dir: &Path, title: &str, keep: Option<&str>) -> String {
 }
 
 pub fn read(dir: &Path, file: &str) -> io::Result<String> {
-    fs::read_to_string(dir.join(file))
+    check_name(file)?;
+    read_path(&dir.join(file))
 }
 
 /// Writes a sheet through a temporary file and a rename, so a crash or a
 /// sync tool never sees a half-written file.
+///
+/// The temporary file has an unpredictable name and is created exclusively
+/// (the write fails rather than follow a link someone planted there), and a
+/// destination that is not an ordinary file is left alone.
 pub fn write(dir: &Path, file: &str, text: &str) -> io::Result<()> {
+    check_name(file)?;
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{file}.tmp"));
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, dir.join(file))
+    let dest = dir.join(file);
+    if let Ok(meta) = fs::symlink_metadata(&dest) {
+        if !meta.file_type().is_file() {
+            return Err(invalid("the sheet is not a regular file"));
+        }
+    }
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let tmp = dir.join(format!(
+        ".{file}.{}-{nanos}-{}{TMP_SUFFIX}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .and_then(|()| fs::rename(&tmp, &dest));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
+const TMP_SUFFIX: &str = ".tmp";
+
+/// Removes temporary files that a crash left behind (older than an hour, so
+/// another device's write in progress is not disturbed).
+fn remove_stale_temps(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.flatten().map(|e| e.path()) {
+        let ours = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.starts_with('.') && n.ends_with(TMP_SUFFIX) && n.contains(&format!(".{EXTENSION}."))
+        });
+        let old = fs::symlink_metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if ours && old {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 /// Creates a sheet holding `text`, named after its title. Returns the file
@@ -186,7 +298,8 @@ pub fn create(dir: &Path, text: &str) -> io::Result<String> {
 /// Renames `file` to match its current title, if they differ. Returns the
 /// (possibly new) file name.
 pub fn tidy(dir: &Path, file: &str) -> io::Result<String> {
-    let text = read(dir, file)?;
+    check_name(file)?;
+    let text = read_head(&dir.join(file))?;
     let wanted = free_name(dir, &title_of(&text), Some(file));
     if wanted != file {
         fs::rename(dir.join(file), dir.join(&wanted))?;
@@ -197,6 +310,7 @@ pub fn tidy(dir: &Path, file: &str) -> io::Result<String> {
 /// Moves a sheet into the folder's `.trash`. Returns its path there, for
 /// [`restore`].
 pub fn trash(dir: &Path, file: &str) -> io::Result<PathBuf> {
+    check_name(file)?;
     let bin = dir.join(TRASH);
     fs::create_dir_all(&bin)?;
     let mut dest = bin.join(file);
@@ -214,7 +328,7 @@ pub fn trash(dir: &Path, file: &str) -> io::Result<PathBuf> {
 
 /// Moves a trashed sheet back. Returns its file name.
 pub fn restore(dir: &Path, trashed: &Path) -> io::Result<String> {
-    let text = fs::read_to_string(trashed)?;
+    let text = read_head(trashed)?;
     let name = free_name(dir, &title_of(&text), None);
     fs::rename(trashed, dir.join(&name))?;
     Ok(name)
@@ -225,8 +339,9 @@ pub fn restore(dir: &Path, trashed: &Path) -> io::Result<String> {
 /// the sheet to open.
 pub fn prepare(dir: &Path, legacy: Option<&Path>, welcome: &str) -> io::Result<String> {
     fs::create_dir_all(dir)?;
+    remove_stale_temps(dir);
     if let Some(old) = legacy.filter(|p| p.exists()) {
-        let text = fs::read_to_string(old)?;
+        let text = read_path(old)?;
         let name = create(dir, &text)?;
         fs::remove_file(old)?;
         return Ok(name);
@@ -321,5 +436,89 @@ mod tests {
             "Welcome.reckon"
         );
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn writes_leave_no_temporary_files() {
+        let d = temp("tmp");
+        write(&d, "A.reckon", "1").unwrap();
+        write(&d, "A.reckon", "2").unwrap();
+        assert_eq!(read(&d, "A.reckon").unwrap(), "2");
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn file_names_cannot_leave_the_folder() {
+        let d = temp("names");
+        for bad in [
+            "../x.reckon",
+            "a/b.reckon",
+            ".hidden.reckon",
+            "",
+            "a\\b.reckon",
+        ] {
+            assert!(write(&d, bad, "x").is_err(), "{bad}");
+            assert!(read(&d, bad).is_err(), "{bad}");
+            assert!(trash(&d, bad).is_err(), "{bad}");
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn oversized_sheets_are_not_read() {
+        let d = temp("big");
+        let f = fs::File::create(d.join("Big.reckon")).unwrap();
+        f.set_len(MAX_BYTES + 1).unwrap();
+        assert!(read(&d, "Big.reckon").is_err());
+        assert!(list(&d).is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn titles_come_from_the_head_of_long_sheets() {
+        let d = temp("head");
+        let long = format!("# Long\nfirst line\n{}", "1 + 1\n".repeat(5000));
+        write(&d, "Long.reckon", &long).unwrap();
+        let sheets = list(&d);
+        assert_eq!(
+            (sheets[0].title.as_str(), sheets[0].preview.as_str()),
+            ("Long", "first line")
+        );
+        assert_eq!(read(&d, "Long.reckon").unwrap(), long);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A shared folder can contain links planted by someone else. They must
+    /// never be read (leaking the target) or written through (replacing it).
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_are_never_followed() {
+        use std::os::unix::fs::symlink;
+        let d = temp("links");
+        let outside = temp("links-outside");
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "# secret").unwrap();
+
+        // A sheet that is really a link to another file.
+        symlink(&secret, d.join("Leak.reckon")).unwrap();
+        assert!(list(&d).is_empty());
+        assert!(read(&d, "Leak.reckon").is_err());
+        assert!(tidy(&d, "Leak.reckon").is_err());
+        assert!(write(&d, "Leak.reckon", "overwritten").is_err());
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "# secret");
+
+        // A link where the old, predictable temporary file used to be.
+        symlink(&secret, d.join(".Note.reckon.tmp")).unwrap();
+        write(&d, "Note.reckon", "# Note").unwrap();
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "# secret");
+        assert_eq!(read(&d, "Note.reckon").unwrap(), "# Note");
+
+        // A link to a device that never ends.
+        symlink("/dev/zero", d.join("Zero.reckon")).unwrap();
+        assert!(read(&d, "Zero.reckon").is_err());
+        assert_eq!(list(&d).len(), 1);
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&outside);
     }
 }

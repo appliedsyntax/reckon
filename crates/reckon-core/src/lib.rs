@@ -26,6 +26,7 @@ pub mod value;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub use currency::Rates;
 pub use eval::DocState;
@@ -78,7 +79,22 @@ pub struct Engine {
     pub plugin_errors: Vec<String>,
     /// Names of loaded plugins.
     pub plugins: Vec<String>,
+    /// User-function calls made while evaluating the current line (see
+    /// [`MAX_CALLS`]).
+    pub(crate) calls: AtomicU32,
 }
+
+/// Longest line that is evaluated; longer ones are treated as text. Sheets
+/// can arrive from a shared folder, so a line must not be able to exhaust
+/// the stack or take unbounded time.
+const MAX_LINE_BYTES: usize = 8 * 1024;
+/// Most numbers, words and operators in one evaluated line. Together with
+/// the parser's nesting limit this bounds how deep evaluation recurses.
+const MAX_LINE_ITEMS: usize = 400;
+const TOO_LONG: &str = "line is too long to evaluate";
+/// Most user-function calls one line may make. The nesting limit alone
+/// allows functions that call each other twice to do 2^32 evaluations.
+pub(crate) const MAX_CALLS: u32 = 10_000;
 
 impl Default for Engine {
     fn default() -> Self {
@@ -109,6 +125,7 @@ impl Engine {
             fixed_now,
             plugin_errors: Vec::new(),
             plugins: Vec::new(),
+            calls: AtomicU32::new(0),
         }
     }
 
@@ -231,8 +248,17 @@ impl Engine {
         now: f64,
         depth: usize,
     ) -> Result<Value, String> {
+        if depth == 0 {
+            self.calls.store(0, Ordering::Relaxed);
+        }
+        if text.len() > MAX_LINE_BYTES {
+            return Err(TOO_LONG.into());
+        }
         let toks = lexer::tokenize(text);
         let items = self.classify_tokens(&toks, st);
+        if items.len() > MAX_LINE_ITEMS {
+            return Err(TOO_LONG.into());
+        }
         let expr = Parser::new(&items, &self.reg).parse_line()?;
         let mut ev = Eval {
             eng: self,
@@ -261,6 +287,11 @@ impl Engine {
             LineKind::Comment => return out,
             LineKind::Expr => {}
         }
+        self.calls.store(0, Ordering::Relaxed);
+        if prep.expr.len() > MAX_LINE_BYTES {
+            out.error = Some(TOO_LONG.into());
+            return out;
+        }
         let toks = lexer::tokenize(&prep.expr);
         let items = self.classify_tokens(&toks, st);
         out.spans.extend(
@@ -270,6 +301,10 @@ impl Engine {
         );
         out.spans.sort_by_key(|s| s.0.start);
         if items.is_empty() {
+            return out;
+        }
+        if items.len() > MAX_LINE_ITEMS {
+            out.error = Some(TOO_LONG.into());
             return out;
         }
         let result = Parser::new(&items, &self.reg)

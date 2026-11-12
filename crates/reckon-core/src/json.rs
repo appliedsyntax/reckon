@@ -31,10 +31,20 @@ impl Json {
     }
 }
 
+/// Deepest nesting of arrays and objects that is read. The responses this
+/// reads are two or three levels deep.
+const MAX_DEPTH: usize = 32;
+/// Largest document that is read (the rate tables are a few kilobytes).
+const MAX_BYTES: usize = 1024 * 1024;
+
 pub fn parse(src: &str) -> Result<Json, String> {
+    if src.len() > MAX_BYTES {
+        return Err("JSON document is too large".into());
+    }
     let mut p = P {
         b: src.as_bytes(),
         i: 0,
+        depth: 0,
     };
     let v = p.value()?;
     p.ws();
@@ -47,6 +57,7 @@ pub fn parse(src: &str) -> Result<Json, String> {
 struct P<'a> {
     b: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl P<'_> {
@@ -64,7 +75,19 @@ impl P<'_> {
             Err(format!("expected '{}' at {}", c as char, self.i))
         }
     }
+    /// Parses one value. Arrays and objects recurse, so nesting is limited:
+    /// a response of thousands of `[` must not overflow the stack.
     fn value(&mut self) -> Result<Json, String> {
+        if self.depth >= MAX_DEPTH {
+            return Err("JSON is nested too deeply".into());
+        }
+        self.depth += 1;
+        let v = self.value_inner();
+        self.depth -= 1;
+        v
+    }
+
+    fn value_inner(&mut self) -> Result<Json, String> {
         self.ws();
         match self.b.get(self.i) {
             Some(b'{') => {

@@ -318,6 +318,8 @@ public final class MainActivity extends Activity {
         }, "rates").start();
     }
 
+    private static final int MAX_DOWNLOAD = 1 << 20;
+
     private static String download(String url) {
         HttpURLConnection c = null;
         try {
@@ -329,7 +331,12 @@ public final class MainActivity extends Activity {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[8192];
                 int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                // The rate tables are a few kilobytes; never buffer more
+                // than 1 MB, whatever the server sends.
+                while ((n = in.read(buf)) > 0) {
+                    if (out.size() + n > MAX_DOWNLOAD) return null;
+                    out.write(buf, 0, n);
+                }
                 return out.toString(StandardCharsets.UTF_8.name());
             }
         } catch (IOException e) {

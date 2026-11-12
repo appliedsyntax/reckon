@@ -283,10 +283,14 @@ impl Rates {
         for line in lines {
             let mut it = line.splitn(2, ' ');
             match (it.next(), it.next()) {
-                (Some("updated"), Some(v)) => rates.updated = v.trim().parse().ok(),
+                (Some("updated"), Some(v)) => {
+                    // A cached time in the future would never look stale.
+                    let now = crate::time::unix_now() as i64;
+                    rates.updated = v.trim().parse::<i64>().ok().map(|u| u.clamp(0, now));
+                }
                 (Some("source"), Some(v)) => rates.source = v.trim().to_string(),
                 (Some(code), Some(v)) => {
-                    if let Ok(r) = v.trim().parse::<f64>() {
+                    if let Some(r) = v.trim().parse::<f64>().ok().filter(|r| usable_rate(*r)) {
                         rates.per_usd.insert(code.to_string(), r);
                     }
                 }
@@ -343,12 +347,21 @@ impl Rates {
         let mut per_usd: HashMap<String, f64> = table
             .iter()
             .filter_map(|(k, v)| v.as_f64().map(|r| (k.clone(), r)))
+            // A rate must be a usable number: zero, negative, infinite or
+            // NaN values would turn every conversion into nonsense.
+            .filter(|(code, r)| usable_rate(*r) && usable_code(code))
             .collect();
+        if per_usd.is_empty() {
+            return Err("no usable rates in response".into());
+        }
+        // Never later than now: a time in the future would stop the rates
+        // from ever being refreshed again.
+        let now = crate::time::unix_now() as i64;
         let updated = j
             .get("time_last_update_unix")
             .and_then(|v| v.as_f64())
-            .map(|v| v as i64)
-            .unwrap_or_else(|| crate::time::unix_now() as i64);
+            .filter(|v| v.is_finite())
+            .map_or(now, |v| (v as i64).clamp(0, now));
         let mut source = "ExchangeRate-API".to_string();
         if let Some(Ok(j)) = crypto.map(json::parse) {
             for (id, code) in CRYPTO_IDS {
@@ -357,7 +370,7 @@ impl Rates {
                     .and_then(|o| o.get("usd"))
                     .and_then(|p| p.as_f64())
                 {
-                    if price > 0.0 {
+                    if usable_rate(price) {
                         per_usd.insert(code.to_string(), 1.0 / price);
                     }
                 }
@@ -379,9 +392,35 @@ impl Rates {
     }
 }
 
+/// A rate must be a positive, finite number.
+fn usable_rate(r: f64) -> bool {
+    r.is_finite() && r > 0.0
+}
+
+/// Currency codes are short and alphanumeric; anything else (spaces, line
+/// breaks) could corrupt the cache file, which has one `CODE rate` per line.
+fn usable_code(code: &str) -> bool {
+    (1..=12).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 fn curl(url: &str) -> Result<String, String> {
     let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "15", url])
+        // HTTPS only (also after redirects), and a cap on the response size
+        // so a misbehaving server cannot fill memory.
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-redirs",
+            "3",
+            "--max-filesize",
+            "1048576",
+            "--max-time",
+            "15",
+            url,
+        ])
         .output()
         .map_err(|e| format!("could not run curl: {e}"))?;
     if !out.status.success() {
