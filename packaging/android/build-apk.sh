@@ -14,7 +14,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
-VERSION_CODE="${VERSION_CODE:-1}"
+# Android only installs an update whose version code is not lower: derive it
+# from the version (0.2.0 -> 200, 1.4.3 -> 10403).
+IFS=. read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION"
+VERSION_CODE="${VERSION_CODE:-$((V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH))}"
 MIN_SDK=30
 TARGET_SDK=35
 
