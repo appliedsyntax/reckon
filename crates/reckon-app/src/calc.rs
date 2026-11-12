@@ -163,6 +163,10 @@ const PAD_Y: Pixels = px(14.);
 /// Scrolling can be clamped to the previous frame's content size, so keep
 /// correcting for a few frames until the cursor really is visible.
 const AUTOSCROLL_FRAMES: u8 = 3;
+const MAX_UNDO_STEPS: usize = 500;
+const MAX_UNDO_BYTES: usize = 8 * 1024 * 1024;
+/// Rows beyond the visible ones that are still laid out and drawn.
+const SHAPE_MARGIN: isize = 30;
 
 const WELCOME: &str = "\
 # Welcome to Reckon
@@ -249,7 +253,9 @@ impl Calc {
         quick: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::trace("view: start");
         let engine = Engine::with_user_data();
+        crate::trace("view: engine ready");
         let mut subs = vec![cx.observe_window_appearance(window, |_, _, cx| cx.notify())];
         if quick {
             subs.push(
@@ -308,6 +314,7 @@ impl Calc {
             let text = calc
                 .init_sheets(window, cx)
                 .unwrap_or_else(|| WELCOME.to_string());
+            crate::trace("view: sheets loaded");
             calc.sel = text.len()..text.len();
             calc.text = text;
             if !calc.engine.plugin_errors.is_empty() {
@@ -319,6 +326,7 @@ impl Calc {
             }
         }
         calc.outputs = calc.engine.evaluate(&calc.text);
+        crate::trace("view: evaluated");
         calc
     }
 
@@ -544,8 +552,12 @@ impl Calc {
             text: self.text.clone(),
             sel: self.sel.clone(),
         });
-        if self.undo.len() > 500 {
-            self.undo.remove(0);
+        // Each step keeps a copy of the whole sheet, so bound the history by
+        // size as well as by count: a long session on a large sheet must not
+        // keep growing.
+        let mut bytes: usize = self.undo.iter().map(|s| s.text.len()).sum();
+        while self.undo.len() > 1 && (self.undo.len() > MAX_UNDO_STEPS || bytes > MAX_UNDO_BYTES) {
+            bytes -= self.undo.remove(0).text.len();
         }
         self.redo.clear();
     }
@@ -1607,8 +1619,33 @@ impl Element for EditorElement {
         let (line_h, font_size) = (calc.line_h(), calc.font_px());
         let font = window.text_style().font();
         let starts = calc.line_starts();
+        let cursor = calc.cursor();
+        let cur_row = calc.row_of(cursor);
+        let (sel_first, sel_last) = (calc.row_of(calc.sel.start), calc.row_of(calc.sel.end));
+        // Only the lines that can be seen are shaped: those in view (plus a
+        // margin, so a scroll step never reveals an unshaped line) and the
+        // ones the cursor and the selection's ends are on, which caret
+        // movement and the input method ask about. Every other row gets an
+        // empty placeholder, so a sheet of thousands of lines costs no more
+        // to draw than a short one.
+        let view = window.content_mask().bounds;
+        let row_at = |y: Pixels| ((y - bounds.top() - PAD_Y) / line_h).floor() as isize;
+        let (first, last) = (
+            row_at(view.top()) - SHAPE_MARGIN,
+            row_at(view.bottom()) + SHAPE_MARGIN,
+        );
+        let wanted = |row: usize| {
+            (first..=last).contains(&(row as isize))
+                || row.abs_diff(cur_row) <= 1
+                || row == sel_first
+                || row == sel_last
+        };
         let mut lines = Vec::with_capacity(starts.len());
         for (row, line) in calc.text.split('\n').enumerate() {
+            if !wanted(row) {
+                lines.push(ShapedLine::default());
+                continue;
+            }
             let spans = calc
                 .outputs
                 .get(row)
@@ -1625,8 +1662,6 @@ impl Element for EditorElement {
         let origin_x = bounds.left() + PAD_X;
         let row_top = |row: usize| bounds.top() + PAD_Y + line_h * row as f32;
         let mut quads = Vec::new();
-        let cursor = calc.cursor();
-        let cur_row = calc.row_of(cursor);
         if calc.sel.is_empty() {
             quads.push(fill(
                 Bounds::from_corners(
@@ -1636,8 +1671,9 @@ impl Element for EditorElement {
                 theme.active_line,
             ));
         } else {
-            let (sr, er) = (calc.row_of(calc.sel.start), calc.row_of(calc.sel.end));
-            for row in sr..=er {
+            let (sr, er) = (sel_first, sel_last);
+            // Rows of the selection that are out of view need no highlight.
+            for row in (sr..=er).filter(|row| wanted(*row)) {
                 let ls = starts[row];
                 let line = &lines[row];
                 let line_len = calc.line_range(row).len();
@@ -1759,6 +1795,11 @@ impl Element for EditorElement {
 
 impl Render for Calc {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| {
+            crate::trace("first render");
+            window.on_next_frame(|_, _| crate::trace("first frame shown"));
+        });
         let theme = Theme::get(self.choice.resolve(window.appearance()));
         self.theme = theme;
         if self
@@ -1795,7 +1836,14 @@ impl Render for Calc {
         let (line_h, results_w) = (self.line_h(), self.results_w());
         let rows = self.text.split('\n').count();
         let cur_row = self.row_of(self.cursor());
-        let results = (0..rows).map(|i| {
+        // Only the result rows in view (plus a margin) become elements; the
+        // rest are stood in for by a spacer above and one below.
+        let scrolled = -self.scroll.offset().y;
+        let row_at = |y: Pixels| ((y - PAD_Y) / line_h).floor() as isize;
+        let first_row = (row_at(scrolled) - SHAPE_MARGIN).clamp(0, rows as isize) as usize;
+        let last_row = (row_at(scrolled + window.viewport_size().height) + SHAPE_MARGIN + 1)
+            .clamp(first_row as isize, rows as isize) as usize;
+        let results = (first_row..last_row).map(|i| {
             let text = self.outputs.get(i).and_then(|o| o.text.clone());
             let active = i == cur_row && self.sel.is_empty();
             div()
@@ -1929,6 +1977,12 @@ impl Render for Calc {
                         div()
                             .id("scroll")
                             .flex_1()
+                            // A column, so the document below can grow to
+                            // the full height of the view when it is short
+                            // (the results column and the paper pattern
+                            // then reach the bottom of the window).
+                            .flex()
+                            .flex_col()
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
                             .child(
@@ -1937,7 +1991,8 @@ impl Render for Calc {
                                     .flex()
                                     .flex_row()
                                     .w_full()
-                                    .min_h_full()
+                                    .flex_grow()
+                                    .flex_shrink_0()
                                     .cursor(CursorStyle::IBeam)
                                     .child(backdrop(theme, line_h, results_w))
                                     .on_mouse_down(
@@ -1966,7 +2021,9 @@ impl Render for Calc {
                                             .pr(PAD_X)
                                             .pl(px(12.))
                                             .cursor(CursorStyle::Arrow)
-                                            .children(results),
+                                            .child(div().h(line_h * first_row as f32))
+                                            .children(results)
+                                            .child(div().h(line_h * (rows - last_row) as f32)),
                                     ),
                             ),
                     ),

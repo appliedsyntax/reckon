@@ -124,16 +124,28 @@ fn bind_keys(cx: &mut App) {
 /// at startup. Nothing is bundled. Other platforms use their usual monospace
 /// fonts, and the system UI font is the last resort.
 fn editor_font(cx: &App) -> SharedString {
+    let ts = cx.text_system();
     if cfg!(target_os = "macos") {
         if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNSMono.ttf") {
-            let _ = cx.text_system().add_fonts(vec![Cow::Owned(bytes)]);
+            let _ = ts.add_fonts(vec![Cow::Owned(bytes)]);
         }
+        // Ask for each font by name. Listing every installed font to see
+        // which exist took about 150 ms, half of the whole start-up.
+        let found = |name: &'static str| {
+            let wanted = gpui::font(name);
+            // A font that cannot be loaded resolves to a fallback instead.
+            let got = ts.get_font_for_id(ts.resolve_font(&wanted));
+            got.is_some_and(|f| f.family == wanted.family)
+        };
+        return [".SF NS Mono", "SF Mono", "Menlo"]
+            .into_iter()
+            .find(|name| found(name))
+            .unwrap_or("Menlo")
+            .into();
     }
-    let available = cx.text_system().all_font_names();
+    // Windows and Linux keep their fonts in memory, so the list is cheap.
+    let available = ts.all_font_names();
     let candidates = [
-        ".SF NS Mono",
-        "SF Mono",
-        "Menlo",
         "Cascadia Mono",
         "Consolas",
         "DejaVu Sans Mono",
@@ -347,10 +359,15 @@ fn open_main(cx: &mut App) {
             cx.new(|cx| Calc::new(window, font, false, cx))
         })
         .expect("open window");
+    // RECKON_BACKGROUND opens the window without bringing Reckon to the
+    // front, so a test run does not take the keyboard from another app.
+    let activate = std::env::var_os("RECKON_BACKGROUND").is_none();
     window
         .update(cx, |view, window, cx| {
             window.focus(&view.focus_handle(cx));
-            cx.activate(true);
+            if activate {
+                cx.activate(true);
+            }
         })
         .ok();
     MAIN.with(|m| *m.borrow_mut() = Some(window));
@@ -430,71 +447,98 @@ fn listen_quick(rx: Receiver<()>, cx: &mut App) {
     .detach();
 }
 
+fn set_initial_menus(cx: &mut App) {
+    cx.set_menus(app_menus(
+        &theme::ThemeChoice::load(),
+        conf::get("sidebar").as_deref() != Some("hidden"),
+        false,
+    ));
+}
+
+/// When the process started, for the start-up timeline.
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// With RECKON_DEBUG set, prints how long after start-up a stage was reached.
+pub fn trace(stage: &str) {
+    let start = START.get_or_init(std::time::Instant::now);
+    if std::env::var_os("RECKON_DEBUG").is_some() {
+        eprintln!(
+            "reckon-app: {:7.1} ms  {stage}",
+            start.elapsed().as_secs_f64() * 1000.
+        );
+    }
+}
+
 fn main() {
+    trace("main");
     let quick_only = std::env::args().any(|a| a == "--quick");
     // `reckon-app --quick`: hand the request to a running app if there is one.
     #[cfg(unix)]
     if quick_only && hotkey::socket::ask_running_app() {
         return;
     }
-    Application::new()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            bind_keys(cx);
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.on_action(|_: &Hide, cx| cx.hide());
-            cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
-            cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-            cx.set_menus(app_menus(
-                &theme::ThemeChoice::load(),
-                conf::get("sidebar").as_deref() != Some("hidden"),
-                false,
-            ));
-            let font = editor_font(cx);
-            if std::env::var_os("RECKON_DEBUG").is_some() {
-                eprintln!("reckon-app: editor font {font}");
-            }
-            FONT.with(|f| *f.borrow_mut() = font);
+    let app = Application::new().with_assets(assets::Assets);
+    trace("platform ready");
+    app.run(move |cx: &mut App| {
+        trace("app running");
+        bind_keys(cx);
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Hide, cx| cx.hide());
+        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        trace("keys bound");
+        let font = editor_font(cx);
+        trace("editor font chosen");
+        if std::env::var_os("RECKON_DEBUG").is_some() {
+            eprintln!("reckon-app: editor font {font}");
+        }
+        FONT.with(|f| *f.borrow_mut() = font);
 
-            if quick_only {
-                // No app running: show just the box and quit when it closes.
-                toggle_quick(cx);
-                cx.on_window_closed(|cx| cx.quit()).detach();
-                return;
-            }
+        if quick_only {
+            // No app running: show just the box and quit when it closes.
+            set_initial_menus(cx);
+            toggle_quick(cx);
+            cx.on_window_closed(|cx| cx.quit()).detach();
+            return;
+        }
 
-            open_main(cx);
-            let (tx, rx) = channel();
-            #[cfg(unix)]
-            hotkey::socket::listen(tx.clone());
-            let shortcut = conf::get("quick_shortcut").unwrap_or_else(|| hotkey::DEFAULT.into());
-            match hotkey::parse(&shortcut) {
-                Some(sc) => {
-                    if let Err(e) = hotkey::register(sc, tx) {
-                        if std::env::var_os("RECKON_DEBUG").is_some() {
-                            eprintln!("reckon-app: quick shortcut {}: {e}", hotkey::label(&sc));
-                        }
+        // The window first: building the menu bar takes about 17 ms,
+        // which is better spent after the first frame is drawn.
+        open_main(cx);
+        trace("main window opened");
+        set_initial_menus(cx);
+        trace("menus set");
+        let (tx, rx) = channel();
+        #[cfg(unix)]
+        hotkey::socket::listen(tx.clone());
+        let shortcut = conf::get("quick_shortcut").unwrap_or_else(|| hotkey::DEFAULT.into());
+        match hotkey::parse(&shortcut) {
+            Some(sc) => {
+                if let Err(e) = hotkey::register(sc, tx) {
+                    if std::env::var_os("RECKON_DEBUG").is_some() {
+                        eprintln!("reckon-app: quick shortcut {}: {e}", hotkey::label(&sc));
                     }
                 }
-                None => {
-                    eprintln!("reckon-app: quick_shortcut \"{shortcut}\" is not a valid shortcut")
-                }
             }
-            listen_quick(rx, cx);
-            if std::env::var_os("RECKON_QUICK_ON_START").is_some() {
-                toggle_quick(cx);
+            None => {
+                eprintln!("reckon-app: quick_shortcut \"{shortcut}\" is not a valid shortcut")
             }
+        }
+        listen_quick(rx, cx);
+        trace("shortcut registered");
+        if std::env::var_os("RECKON_QUICK_ON_START").is_some() {
+            toggle_quick(cx);
+        }
 
-            // Closing the main window quits; closing the quick box does not.
-            cx.on_window_closed(|cx| {
-                let main_open =
-                    MAIN.with(|m| m.borrow().map(|h| h.update(cx, |_, _, _| ()).is_ok()));
-                if main_open != Some(true) {
-                    cx.quit();
-                }
-            })
-            .detach();
-        });
+        // Closing the main window quits; closing the quick box does not.
+        cx.on_window_closed(|cx| {
+            let main_open = MAIN.with(|m| m.borrow().map(|h| h.update(cx, |_, _, _| ()).is_ok()));
+            if main_open != Some(true) {
+                cx.quit();
+            }
+        })
+        .detach();
+    });
 }
 
 #[cfg(test)]

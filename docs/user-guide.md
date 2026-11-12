@@ -377,6 +377,17 @@ folder), `app.conf` (settings: theme, sheets folder, quick-calc shortcut),
 `document.reckon` is moved into the sheets folder on first start. Set `RECKON_HOME` to use a
 different folder.
 
+### Limits
+
+These keep a damaged or hostile file from hanging or crashing the app; you
+are unlikely to meet them in normal use.
+
+- A sheet larger than 4 MB is not opened or listed.
+- A line longer than 8,000 bytes, or with more than 400 numbers, words and
+  operators, or nested more than about 45 parentheses deep, gets no result.
+- Shortcuts and links in the sheets folder (symbolic links) are ignored;
+  sheets must be ordinary files.
+
 ## CLI
 
 ```text

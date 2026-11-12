@@ -208,6 +208,62 @@ view behind the `UITextView` on iOS, and `onDraw` on Android. The choice
 saved in `app.conf` on the desktop, in `UserDefaults` on iOS and in
 `SharedPreferences` on Android.
 
+## Untrusted input and limits
+
+A sheets folder can be shared or synced, so another device or person may
+write to it, and the open sheet is evaluated as soon as the app starts.
+Anything in that folder, and anything a rate service sends, is treated as
+untrusted.
+
+- **Only regular files.** `sheets.rs` never reads or replaces a symbolic
+  link or a device (`symlink_metadata`, checked again on the open file).
+  A link named like a sheet could otherwise show the contents of any file
+  the user can read, and a save would write through it.
+- **Exclusive temporary files.** A save writes to a temporary file with an
+  unpredictable name, opened with `create_new`, then renames it over the
+  sheet. A predictable name could be pre-created as a link to another file.
+- **Sizes.** Sheets over 4 MB are not opened or listed. The list reads only
+  the first 4 KB of each sheet (title and preview).
+- **File names.** A sheet name with a path separator or a leading dot is
+  refused, including through the C interface.
+- **Lines.** A line over 8 KB, or with more than 400 numbers, words and
+  operators, is not evaluated. The parser stops at 96 levels of nesting
+  (parentheses, signs, powers). These bound the recursion depth: the
+  deepest line allowed needs about 230 KB of stack in a release build,
+  and the smallest main-thread stack Reckon runs on is 1 MB (iOS,
+  Windows). `tests/hostile.rs` checks this on a 512 KB stack.
+- **Plugin functions.** A line may make 10,000 user-function calls; the
+  nesting limit of 32 alone would allow functions that call each other
+  twice to do billions of evaluations.
+- **Rates.** `curl` is restricted to HTTPS (also after redirects) and to a
+  1 MB response. The JSON reader stops at 32 levels and 1 MB. Rates must be
+  positive, finite numbers with alphanumeric codes, and the update time is
+  never later than now, so bad data cannot stop later refreshes.
+- **Settings.** Control characters are removed from values written to
+  `app.conf`, so a value cannot add another setting on a new line.
+- **Quick-calc socket.** When the data folder's path is too long for a
+  socket, the socket goes in `$XDG_RUNTIME_DIR` or in a folder under the
+  temp folder that is checked to be private to the user.
+- **Builds.** CI build jobs have read-only access to the repository; only
+  the release job can write. Actions are pinned to commits and cargo runs
+  with `--locked`.
+
+## Performance
+
+- **Start-up.** The editor font is asked for by name. Listing every
+  installed font to pick one took about 150 ms on macOS, half of the
+  start-up time. The window is opened before the menu bar is built.
+  `RECKON_DEBUG=1` prints a timeline of start-up stages.
+- **Large sheets.** Only the lines in view (plus 30 rows either side, and
+  the rows the cursor and selection ends are on) are shaped, and only the
+  result rows in view become elements; spacers stand in for the rest. A
+  3,000-line sheet redraws in about 6 ms; before, it took about 33 ms.
+- **Idle.** Nothing in Reckon runs on a timer except the sheets poll every
+  1.5 s (two `stat` calls; the folder is re-listed every 12 s, reading 4 KB
+  per sheet). GPUI's display link runs while the window is visible, which
+  accounts for the app's idle CPU use of under 1%.
+- **Memory.** The undo history is capped at 500 steps and 8 MB.
+
 ## Dependency policy
 
 The engine and CLI use only `std`. The app adds GPUI and nothing else.
