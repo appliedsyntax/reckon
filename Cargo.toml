@@ -4,7 +4,7 @@ members = ["crates/reckon-core", "crates/reckon-cli", "crates/reckon-app", "crat
 default-members = ["crates/reckon-core", "crates/reckon-cli"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 
