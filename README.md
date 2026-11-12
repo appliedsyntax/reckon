@@ -44,6 +44,9 @@ native front ends over the same engine. None of the apps use web views.
   them between devices
 - Quick calc: ⌃⌥Space opens a small Reckon box over any app; Enter copies
   the answer
+- A desktop app that follows each system's conventions: on macOS a full
+  menu bar, a Window menu with the system's tiling commands, Settings on
+  ⌘, and text size on ⌘+ / ⌘−
 - Twelve original themes on every platform, from graph-paper Paper to
   green-screen Phosphor, with a live-preview picker and a match-system mode
 

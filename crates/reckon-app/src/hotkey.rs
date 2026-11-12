@@ -110,6 +110,18 @@ pub fn register(sc: Shortcut, tx: Sender<()>) -> Result<(), String> {
     }
 }
 
+/// Changes the shortcut while the app runs. `Ok(true)` means it is live now;
+/// `Ok(false)` means this platform picks it up at the next start.
+pub fn rebind(sc: Shortcut) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    return mac::rebind(sc).map(|()| true);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = sc;
+        Ok(false)
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::c_void;
@@ -151,6 +163,7 @@ mod mac {
             options: u32,
             out: *mut *mut c_void,
         ) -> i32;
+        fn UnregisterEventHotKey(hot_key: *mut c_void) -> i32;
     }
 
     const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
@@ -213,8 +226,11 @@ mod mac {
         LETTERS.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)
     }
 
-    pub fn register(sc: Shortcut, tx: Sender<()>) -> Result<(), String> {
-        let code = key_code(sc.key).ok_or("unsupported key")?;
+    /// The registered hot key (an `EventHotKeyRef`), kept so it can be
+    /// replaced. Only touched on the main thread.
+    static CURRENT: Mutex<usize> = Mutex::new(0);
+
+    fn modifiers(sc: &Shortcut) -> u32 {
         let mut mods = 0;
         if sc.cmd {
             mods |= CMD
@@ -228,18 +244,51 @@ mod mac {
         if sc.ctrl {
             mods |= CONTROL
         }
+        mods
+    }
+
+    /// Registers `sc`, replacing the hot key registered before (if any).
+    fn bind(sc: Shortcut) -> Result<(), String> {
+        let code = key_code(sc.key).ok_or("unsupported key")?;
+        let mut current = CURRENT.lock().map_err(|_| "hot key state is poisoned")?;
+        unsafe {
+            let id = EventHotKeyID {
+                signature: u32::from_be_bytes(*b"RCKN"),
+                id: 1,
+            };
+            let mut hot_key_ref = std::ptr::null_mut();
+            let err = RegisterEventHotKey(
+                code,
+                modifiers(&sc),
+                id,
+                GetApplicationEventTarget(),
+                0,
+                &mut hot_key_ref,
+            );
+            if err != 0 {
+                return Err(format!("that shortcut is taken by another app ({err})"));
+            }
+            // Only drop the old shortcut once the new one is in place.
+            if *current != 0 {
+                UnregisterEventHotKey(*current as *mut c_void);
+            }
+            *current = hot_key_ref as usize;
+        }
+        Ok(())
+    }
+
+    pub fn register(sc: Shortcut, tx: Sender<()>) -> Result<(), String> {
         if SENDER.set(Mutex::new(tx)).is_err() {
             return Err("already registered".into());
         }
         unsafe {
-            let target = GetApplicationEventTarget();
             let spec = EventTypeSpec {
                 class: K_EVENT_CLASS_KEYBOARD,
                 kind: K_EVENT_HOT_KEY_PRESSED,
             };
             let mut handler_ref = std::ptr::null_mut();
             let err = InstallEventHandler(
-                target,
+                GetApplicationEventTarget(),
                 on_hot_key,
                 1,
                 &spec,
@@ -249,17 +298,16 @@ mod mac {
             if err != 0 {
                 return Err(format!("InstallEventHandler failed ({err})"));
             }
-            let id = EventHotKeyID {
-                signature: u32::from_be_bytes(*b"RCKN"),
-                id: 1,
-            };
-            let mut hot_key_ref = std::ptr::null_mut();
-            let err = RegisterEventHotKey(code, mods, id, target, 0, &mut hot_key_ref);
-            if err != 0 {
-                return Err(format!("the shortcut is taken by another app ({err})"));
-            }
         }
-        Ok(())
+        bind(sc)
+    }
+
+    /// Switches to a new shortcut while the app is running.
+    pub fn rebind(sc: Shortcut) -> Result<(), String> {
+        if SENDER.get().is_none() {
+            return Err("the shortcut handler is not installed".into());
+        }
+        bind(sc)
     }
 }
 

@@ -181,7 +181,22 @@ Subtracting two "current time" values gives the wall-clock difference:
 
 ## Desktop app shortcuts
 
-On Windows and Linux, use Ctrl instead of ⌘.
+The shortcuts follow each system's conventions. On Windows and Linux, use
+Ctrl instead of ⌘ unless the table gives a different key.
+
+| Action | macOS | Windows and Linux |
+|---|---|---|
+| Settings | ⌘, | Ctrl+, |
+| Larger / smaller text | ⌘+ / ⌘− | Ctrl++ / Ctrl+− |
+| Text back to its normal size | ⌘0 | Ctrl+0 |
+| Show or hide the sheets sidebar | ⌃⌘S (or the sidebar button in the toolbar) | Ctrl+B |
+| Full screen | ⌃⌘F | F11 |
+| Minimize the window | ⌘M | the title bar's button |
+| Close the window | ⌘W | Alt+F4 |
+| Hide Reckon / hide other apps | ⌘H / ⌥⌘H | |
+| Quit | ⌘Q | Ctrl+Q |
+
+Editing and sheets:
 
 | Action | Shortcut |
 |---|---|
@@ -195,11 +210,48 @@ On Windows and Linux, use Ctrl instead of ⌘.
 | Choose a theme | ⌘K then ⌘T (or click the theme name in the status bar) |
 | New sheet | ⌘N |
 | Find a sheet (search) | ⌘P |
-| Show or hide the sheets sidebar | ⌘\\ |
 | Quick calc from any app | ⌃⌥Space (Ctrl+Alt+Space on Windows) |
 
 Sheets save automatically. Opening a file copies its text into the current
 sheet but never modifies the original; use Export to write a file.
+
+## The window
+
+A toolbar runs along the top of the window. From left to right: a button
+that shows or hides the sheets sidebar, the open sheet's title, a **+** for
+a new sheet and a gear that opens Settings.
+
+- **macOS:** the toolbar is part of the title bar, next to the close,
+  minimize and zoom buttons. Drag it to move the window; double-click it to
+  zoom or minimize (whichever you chose in System Settings › Desktop &
+  Dock). The **Window** menu has Minimize and Zoom, and macOS adds its own
+  commands there: Fill, Center, Move & Resize, Full Screen Tile and the
+  list of windows. Holding the pointer over the green button offers the
+  same tiling choices. View › Enter Full Screen (⌃⌘F) fills the screen.
+- **Windows and Linux:** the window keeps the system's own title bar, so
+  minimize, maximize, snapping to screen edges (Win+arrow keys) and Alt+F4
+  work as in any other app. F11 switches full screen.
+
+Reckon remembers the window's size and position and opens there next time.
+If that screen is no longer connected, the window moves back into view.
+
+## Settings
+
+Press ⌘, (Ctrl+, on Windows and Linux), click the gear in the toolbar, or
+choose Reckon › Settings… on macOS. Esc, the ✕ or a click outside closes
+it. Changes apply at once and are saved.
+
+- **Theme:** Match System or one of the twelve themes (see Themes).
+- **Text size:** − and + step the size, Reset returns to 14.5. The
+  shortcuts ⌘+, ⌘− and ⌘0 do the same without opening Settings, and View
+  has Zoom In, Zoom Out and Actual Size. Sizes run from 10.5 to 30.5; the
+  line spacing and the results column grow with the text.
+- **Sheets folder:** shows where sheets are kept, with Choose… to move them
+  (for example into iCloud Drive to sync) and a button to open the folder.
+- **Quick calc shortcut:** click Change…, then press the new shortcut. On
+  macOS it works straight away; on Windows it applies after a restart.
+- **About:** the version, the license and links to the guide and the
+  third-party notices. Reckon › About Reckon opens Settings here.
 
 ## Sheets
 
@@ -249,9 +301,10 @@ box over whatever you are doing. Type a calculation, e.g.
 answer and closes the box, **Esc** closes it, and clicking elsewhere closes
 it too. Nothing is saved to your sheets.
 
-- Change the shortcut with `quick_shortcut` in `app.conf`, e.g.
+- Change the shortcut in Settings (⌘,) › Quick calc: click Change… and
+  press the new one. It is stored as `quick_shortcut` in `app.conf`, e.g.
   `quick_shortcut = cmd-shift-space` (modifiers: ctrl, alt/option, shift,
-  cmd/win; key: a letter, digit or `space`). Restart Reckon afterwards.
+  cmd/win; key: a letter, digit or `space`).
 - If another app already owns the shortcut, Reckon cannot take it; pick a
   different one.
 - **Linux:** desktops do not let apps grab global shortcuts (Wayland forbids
@@ -280,9 +333,9 @@ heavier result weight. In every theme, text has at least 7:1 contrast with
 the background and results and highlights at least 4.5:1; a test checks
 this.
 
-On the desktop, press ⌘K then ⌘T (Ctrl+K then Ctrl+T on Windows and
-Linux), click the theme name at the right of the status bar, or use
-View › Theme on macOS. In the picker, hovering over a theme or pressing ↑
+On the desktop, choose a theme in Settings (⌘,), or press ⌘K then ⌘T
+(Ctrl+K then Ctrl+T on Windows and Linux), click the theme name at the
+right of the status bar, or use View › Theme on macOS. In the picker, hovering over a theme or pressing ↑
 and ↓ previews it; clicking or Enter keeps it, and Esc (or clicking
 outside) goes back. The current theme has a ✓, in the picker and in the
 menu.
@@ -306,6 +359,8 @@ theme_mode = system        # or "fixed"
 theme = Blueprint          # used when theme_mode = fixed
 light_theme = Ledger       # used when theme_mode = system
 dark_theme = Nocturne
+font_size = 16.5           # text size (10.5 to 30.5)
+window = 286,191,940,600   # last window position and size: x,y,width,height
 ```
 
 ## Files

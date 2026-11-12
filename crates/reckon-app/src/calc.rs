@@ -18,7 +18,9 @@ use reckon_core::{paths, Engine, Hl, LineKind, LineOutput, Rates};
 
 use crate::theme::{Pattern, Theme, ThemeChoice, THEMES};
 
+mod chrome;
 mod sheets_ui;
+use chrome::SettingsPanel;
 use sheets_ui::SheetsState;
 
 actions!(
@@ -69,6 +71,21 @@ actions!(
         ChooseSheetsFolder,
         RevealSheetsFolder,
         DismissQuick,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
+        OpenSettings,
+        OpenAbout,
+        CloseSettings,
+        Minimize,
+        ZoomWindow,
+        ToggleFullScreen,
+        CloseWindow,
+        OpenHelp,
+        ReportIssue,
+        Hide,
+        HideOthers,
+        ShowAll,
         ToggleThemePicker,
         MatchSystemTheme,
         PickerUp,
@@ -136,11 +153,13 @@ fn swatch_el(halves: [[gpui::Hsla; 3]; 2], theme: &Theme) -> impl IntoElement {
         .when(split, |d| d.child(half(halves[1])))
 }
 
-pub const LINE_H: Pixels = px(28.);
-const FONT_SIZE: Pixels = px(14.5);
+/// Editor text size in pixels; the line height and results column scale
+/// with it.
+pub const DEFAULT_FONT_SIZE: f32 = 14.5;
+const MIN_FONT_SIZE: f32 = 10.5;
+const MAX_FONT_SIZE: f32 = 30.5;
 const PAD_X: Pixels = px(18.);
 const PAD_Y: Pixels = px(14.);
-const RESULTS_W: Pixels = px(260.);
 /// Scrolling can be clamped to the previous frame's content size, so keep
 /// correcting for a few frames until the cursor really is visible.
 const AUTOSCROLL_FRAMES: u8 = 3;
@@ -203,6 +222,16 @@ pub struct Calc {
     status: Option<(SharedString, Instant)>,
     /// The sheets folder and sidebar (None in the quick-calc box).
     sheets: Option<SheetsState>,
+    /// Editor text size in pixels (see `DEFAULT_FONT_SIZE`).
+    font_size: f32,
+    /// Whether the window is full screen (for the View menu's label).
+    fullscreen: bool,
+    /// The settings panel, when open.
+    settings: Option<SettingsPanel>,
+    /// Window size and position waiting to be written to app.conf.
+    pending_bounds: Option<Bounds<Pixels>>,
+    /// The title last given to the system window.
+    window_title: SharedString,
     /// The quick-calc box: one line, nothing saved, Enter copies the result.
     quick: bool,
     /// Quick box only: the window has been active, so losing focus closes it.
@@ -257,12 +286,25 @@ impl Calc {
             picker_scroll: ScrollHandle::new(),
             status: None,
             sheets: None,
+            font_size: Self::saved_font_size(),
+            settings: None,
+            fullscreen: false,
+            pending_bounds: None,
+            window_title: SharedString::default(),
             quick,
             was_active: false,
             font,
             _subs: subs,
         };
         if !quick {
+            let bounds_sub = cx.observe_window_bounds(window, |this: &mut Calc, window, cx| {
+                this.note_window_bounds(window, cx)
+            });
+            let quit_sub = cx.on_app_quit(|this: &mut Calc, _| {
+                this.save_window_bounds();
+                async {}
+            });
+            calc._subs.extend([bounds_sub, quit_sub]);
             let text = calc
                 .init_sheets(window, cx)
                 .unwrap_or_else(|| WELCOME.to_string());
@@ -278,6 +320,51 @@ impl Calc {
         }
         calc.outputs = calc.engine.evaluate(&calc.text);
         calc
+    }
+
+    // ------------------------------------------------------------ text size
+
+    /// The text size saved in app.conf.
+    pub fn saved_font_size() -> f32 {
+        crate::conf::get("font_size")
+            .and_then(|v| v.parse::<f32>().ok())
+            .map_or(DEFAULT_FONT_SIZE, |v| v.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+    }
+
+    /// Height of one line at a text size: about 1.9 times the size (28 at
+    /// the default).
+    pub fn line_height_for(size: f32) -> f32 {
+        (size * 1.93).round()
+    }
+
+    fn font_px(&self) -> Pixels {
+        px(self.font_size)
+    }
+
+    pub fn line_h(&self) -> Pixels {
+        px(Self::line_height_for(self.font_size))
+    }
+
+    /// Width of the results column, which grows with the text size.
+    fn results_w(&self) -> Pixels {
+        px((260. * self.font_size / DEFAULT_FONT_SIZE)
+            .clamp(210., 440.)
+            .round())
+    }
+
+    fn set_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        // The quick box is sized when it opens; it follows the main window.
+        if self.quick {
+            return;
+        }
+        let size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        if (size - self.font_size).abs() > f32::EPSILON {
+            self.font_size = size;
+            crate::conf::set(&[("font_size", format!("{size}"))]);
+            self.autoscroll = AUTOSCROLL_FRAMES;
+        }
+        self.set_status(format!("Text size {size}"));
+        cx.notify();
     }
 
     // ------------------------------------------------------------ text model
@@ -441,7 +528,7 @@ impl Calc {
         let row = if rel_y < px(0.) {
             0
         } else {
-            ((rel_y / LINE_H) as usize).min(rows - 1)
+            ((rel_y / self.line_h()) as usize).min(rows - 1)
         };
         let r = self.line_range(row);
         let col = self
@@ -625,7 +712,7 @@ impl Calc {
         choice.save();
         // Native menus have no check state in GPUI, so rebuild them with a
         // tick next to the current theme.
-        cx.set_menus(crate::app_menus(&choice));
+        self.refresh_menus(cx);
         let msg = if choice.follow_system {
             format!(
                 "Theme: match system ({} by day, {} by night)",
@@ -788,6 +875,7 @@ impl Calc {
                     .overflow_hidden()
                     .font_family(".SystemUIFont")
                     .text_size(px(13.))
+                    .line_height(px(28.))
                     .child(
                         div()
                             .flex_none()
@@ -1301,13 +1389,13 @@ impl EntityInputHandler for Calc {
         let row = self.row_of(r.start);
         let start = self.line_range(row).start;
         let layout = self.layouts.get(row)?;
-        let top = bounds.top() + PAD_Y + LINE_H * row as f32;
+        let top = bounds.top() + PAD_Y + self.line_h() * row as f32;
         let x0 = bounds.left() + PAD_X + layout.x_for_index(r.start - start);
         let x1 =
             bounds.left() + PAD_X + layout.x_for_index(r.end.min(self.line_range(row).end) - start);
         Some(Bounds::from_corners(
             point(x0, top),
-            point(x1, top + LINE_H),
+            point(x1, top + self.line_h()),
         ))
     }
 
@@ -1341,11 +1429,11 @@ fn divider(theme: Theme) -> impl IntoElement {
 
 /// Paints the results-column tint and the theme's texture behind the
 /// document. Only the visible part is drawn.
-fn backdrop(theme: Theme) -> impl IntoElement {
+fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            let results_left = bounds.right() - RESULTS_W;
+            let results_left = bounds.right() - results_w;
             window.paint_quad(fill(
                 Bounds::from_corners(point(results_left, bounds.top()), bounds.bottom_right()),
                 theme.results_bg,
@@ -1365,10 +1453,10 @@ fn backdrop(theme: Theme) -> impl IntoElement {
                 Pattern::None => {}
                 Pattern::Ruled => {
                     // A rule under each line of text.
-                    let first = ((top - bounds.top() - PAD_Y) / LINE_H).floor().max(0.) as usize;
+                    let first = ((top - bounds.top() - PAD_Y) / line_h).floor().max(0.) as usize;
                     let mut row = first;
                     loop {
-                        let y = bounds.top() + PAD_Y + LINE_H * (row + 1) as f32 - px(1.);
+                        let y = bounds.top() + PAD_Y + line_h * (row + 1) as f32 - px(1.);
                         if y > bottom {
                             break;
                         }
@@ -1379,7 +1467,7 @@ fn backdrop(theme: Theme) -> impl IntoElement {
                 Pattern::Grid => {
                     // Graph paper: a line every half row, stronger on row
                     // boundaries so each line of text sits in its own band.
-                    let step = LINE_H / 2.;
+                    let step = line_h / 2.;
                     let minor = theme.rule.opacity(0.55);
                     let origin = bounds.top() + PAD_Y;
                     let mut i = ((top - origin) / step).floor() as i64;
@@ -1496,10 +1584,12 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let rows = self.calc.read(cx).text.split('\n').count();
+        let calc = self.calc.read(cx);
+        let rows = calc.text.split('\n').count();
+        let line_h = calc.line_h();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (PAD_Y * 2. + LINE_H * rows as f32).into();
+        style.size.height = (PAD_Y * 2. + line_h * rows as f32).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1514,6 +1604,7 @@ impl Element for EditorElement {
     ) -> Prepaint {
         let calc = self.calc.read(cx);
         let theme = calc.theme;
+        let (line_h, font_size) = (calc.line_h(), calc.font_px());
         let font = window.text_style().font();
         let starts = calc.line_starts();
         let mut lines = Vec::with_capacity(starts.len());
@@ -1526,13 +1617,13 @@ impl Element for EditorElement {
             let runs = runs_for(line, spans, &theme, &font);
             lines.push(window.text_system().shape_line(
                 SharedString::from(line.to_string()),
-                FONT_SIZE,
+                font_size,
                 &runs,
                 None,
             ));
         }
         let origin_x = bounds.left() + PAD_X;
-        let row_top = |row: usize| bounds.top() + PAD_Y + LINE_H * row as f32;
+        let row_top = |row: usize| bounds.top() + PAD_Y + line_h * row as f32;
         let mut quads = Vec::new();
         let cursor = calc.cursor();
         let cur_row = calc.row_of(cursor);
@@ -1540,7 +1631,7 @@ impl Element for EditorElement {
             quads.push(fill(
                 Bounds::from_corners(
                     point(bounds.left(), row_top(cur_row)),
-                    point(bounds.right(), row_top(cur_row) + LINE_H),
+                    point(bounds.right(), row_top(cur_row) + line_h),
                 ),
                 theme.active_line,
             ));
@@ -1563,7 +1654,7 @@ impl Element for EditorElement {
                 quads.push(fill(
                     Bounds::from_corners(
                         point(origin_x + x0, row_top(row)),
-                        point(origin_x + x1, row_top(row) + LINE_H),
+                        point(origin_x + x1, row_top(row) + line_h),
                     ),
                     theme.selection,
                 ));
@@ -1576,16 +1667,16 @@ impl Element for EditorElement {
             let w = if next > cursor && next <= starts[cur_row] + calc.line_range(cur_row).len() {
                 lines[cur_row].x_for_index(next - starts[cur_row]) - cx_x
             } else {
-                FONT_SIZE * 0.6
+                font_size * 0.6
             };
             Bounds::new(
                 point(origin_x + cx_x, row_top(cur_row) + px(4.)),
-                size(w.max(px(2.)), LINE_H - px(8.)),
+                size(w.max(px(2.)), line_h - px(8.)),
             )
         } else {
             Bounds::new(
                 point(origin_x + cx_x, row_top(cur_row) + px(5.)),
-                size(px(2.), LINE_H - px(10.)),
+                size(px(2.), line_h - px(10.)),
             )
         };
         let cursor_quad = fill(cursor_bounds, theme.cursor);
@@ -1608,8 +1699,9 @@ impl Element for EditorElement {
     ) {
         let calc = self.calc.read(cx);
         let focus = calc.focus.clone();
-        // While the theme picker is open, typing must not edit the document.
-        if calc.picker.is_none() {
+        let line_h = calc.line_h();
+        // While a panel is open, typing must not edit the document.
+        if calc.picker.is_none() && calc.settings.is_none() {
             window.handle_input(
                 &focus,
                 ElementInputHandler::new(bounds, self.calc.clone()),
@@ -1622,9 +1714,9 @@ impl Element for EditorElement {
         for (row, line) in pre.lines.iter().enumerate() {
             let origin = point(
                 bounds.left() + PAD_X,
-                bounds.top() + PAD_Y + LINE_H * row as f32,
+                bounds.top() + PAD_Y + line_h * row as f32,
             );
-            line.paint(origin, LINE_H, window, cx).ok();
+            line.paint(origin, line_h, window, cx).ok();
         }
         let cursor = pre.cursor.take();
         if focus.is_focused(window) {
@@ -1642,8 +1734,8 @@ impl Element for EditorElement {
             // Keep the cursor line (plus a little margin) inside the viewport.
             let view = calc.scroll.bounds();
             let row = calc.row_of(calc.cursor());
-            let top = bounds.top() + PAD_Y + LINE_H * row as f32;
-            let bottom = top + LINE_H + PAD_Y;
+            let top = bounds.top() + PAD_Y + calc.line_h() * row as f32;
+            let bottom = top + calc.line_h() + PAD_Y;
             let mut off = calc.scroll.offset();
             if top < view.top() {
                 off.y += view.top() - top;
@@ -1682,12 +1774,25 @@ impl Render for Calc {
             .map(|p| self.render_picker(p, &theme, cx));
         let theme_label = self.theme_label(window);
         let sidebar = self.render_sidebar(&theme, cx);
+        let toolbar = (!self.quick).then(|| self.render_toolbar(&theme, window, cx));
+        let settings = self
+            .settings
+            .as_ref()
+            .map(|p| self.render_settings(p, &theme, cx));
+        if !self.quick {
+            let title: SharedString = format!("{} — Reckon", self.sheet_title()).into();
+            if title != self.window_title {
+                window.set_window_title(&title);
+                self.window_title = title;
+            }
+        }
         let can_undo_delete = self.sheets.as_ref().is_some_and(|s| s.trashed.is_some())
             && self
                 .status
                 .as_ref()
                 .is_some_and(|(m, _)| m.starts_with("Deleted"));
 
+        let (line_h, results_w) = (self.line_h(), self.results_w());
         let rows = self.text.split('\n').count();
         let cur_row = self.row_of(self.cursor());
         let results = (0..rows).map(|i| {
@@ -1695,7 +1800,7 @@ impl Render for Calc {
             let active = i == cur_row && self.sel.is_empty();
             div()
                 .id(("result", i))
-                .h(LINE_H)
+                .h(line_h)
                 .w_full()
                 .flex()
                 .items_center()
@@ -1726,11 +1831,25 @@ impl Render for Calc {
         };
 
         div()
-            .key_context(if self.picker.is_some() {
+            .key_context(if self.settings.is_some() {
+                "Settings"
+            } else if self.picker.is_some() {
                 "ThemePicker"
             } else {
                 "Calc"
             })
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::zoom_reset))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::open_about))
+            .on_action(cx.listener(Self::close_settings))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom_window))
+            .on_action(cx.listener(Self::toggle_fullscreen))
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::open_help))
+            .on_action(cx.listener(Self::report_issue))
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::toggle_theme_picker))
             .on_action(cx.listener(Self::picker_up))
@@ -1790,8 +1909,9 @@ impl Render for Calc {
             .bg(theme.bg)
             .text_color(theme.text)
             .font_family(self.font.clone())
-            .text_size(FONT_SIZE)
-            .line_height(LINE_H)
+            .text_size(self.font_px())
+            .line_height(line_h)
+            .children(toolbar)
             .when(self.quick, |d| {
                 d.rounded(px(10.))
                     .border_1()
@@ -1819,7 +1939,7 @@ impl Render for Calc {
                                     .w_full()
                                     .min_h_full()
                                     .cursor(CursorStyle::IBeam)
-                                    .child(backdrop(theme))
+                                    .child(backdrop(theme, line_h, results_w))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(Self::on_mouse_down),
@@ -1840,7 +1960,7 @@ impl Render for Calc {
                                     .child(divider(theme))
                                     .child(
                                         div()
-                                            .w(RESULTS_W)
+                                            .w(results_w)
                                             .flex_none()
                                             .pt(PAD_Y)
                                             .pr(PAD_X)
@@ -1865,6 +1985,7 @@ impl Render for Calc {
                         .bg(theme.status_bg)
                         .font_family(".SystemUIFont")
                         .text_size(px(11.))
+                        .line_height(px(18.))
                         .text_color(theme.muted)
                         .child(div().flex().items_center().gap(px(10.)).child(status).when(
                             can_undo_delete,
@@ -1899,5 +2020,6 @@ impl Render for Calc {
                 )
             })
             .children(picker)
+            .children(settings)
     }
 }

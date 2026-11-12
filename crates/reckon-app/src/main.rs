@@ -3,6 +3,7 @@
 // No console window behind the app in Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod assets;
 mod calc;
 mod conf;
 mod hotkey;
@@ -15,7 +16,8 @@ use std::sync::mpsc::{channel, Receiver};
 
 use gpui::{
     point, px, size, App, AppContext, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem,
-    SharedString, TitlebarOptions, WindowBounds, WindowHandle, WindowKind, WindowOptions,
+    OsAction, Pixels, SharedString, SystemMenuType, TitlebarOptions, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions,
 };
 
 use calc::*;
@@ -64,7 +66,13 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(&format!("{m}-q"), Quit, None),
         KeyBinding::new(&format!("{m}-n"), NewSheet, ctx),
         KeyBinding::new(&format!("{m}-p"), FindSheet, ctx),
-        KeyBinding::new(&format!("{m}-\\"), ToggleSidebar, ctx),
+        // Standard app and window shortcuts work wherever the focus is.
+        KeyBinding::new(&format!("{m}-,"), OpenSettings, None),
+        KeyBinding::new(&format!("{m}-="), ZoomIn, None),
+        KeyBinding::new(&format!("{m}-+"), ZoomIn, None),
+        KeyBinding::new(&format!("{m}--"), ZoomOut, None),
+        KeyBinding::new(&format!("{m}-0"), ZoomReset, None),
+        KeyBinding::new("escape", CloseSettings, Some("Settings")),
         KeyBinding::new("escape", DismissQuick, ctx),
         // Same chord as Zed's theme selector.
         KeyBinding::new(&format!("{m}-k {m}-t"), ToggleThemePicker, None),
@@ -75,6 +83,14 @@ fn bind_keys(cx: &mut App) {
     ];
     if mac {
         b.extend([
+            // Show/Hide Sidebar and full screen use the system-wide macOS
+            // shortcuts.
+            KeyBinding::new("ctrl-cmd-s", ToggleSidebar, None),
+            KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+            KeyBinding::new("cmd-m", Minimize, None),
+            KeyBinding::new("cmd-w", CloseWindow, None),
+            KeyBinding::new("cmd-h", Hide, None),
+            KeyBinding::new("alt-cmd-h", HideOthers, None),
             KeyBinding::new("cmd-backspace", DeleteToLineStart, ctx),
             KeyBinding::new("cmd-left", LineStart, ctx),
             KeyBinding::new("cmd-right", LineEnd, ctx),
@@ -88,6 +104,8 @@ fn bind_keys(cx: &mut App) {
         ]);
     } else {
         b.extend([
+            KeyBinding::new("ctrl-b", ToggleSidebar, None),
+            KeyBinding::new("f11", ToggleFullScreen, None),
             KeyBinding::new("ctrl-home", DocStart, ctx),
             KeyBinding::new("ctrl-end", DocEnd, ctx),
             KeyBinding::new("ctrl-shift-home", SelectDocStart, ctx),
@@ -131,11 +149,24 @@ fn editor_font(cx: &App) -> SharedString {
 
 /// The menu bar. Rebuilt when the theme changes, because GPUI menus have no
 /// check state: the current theme gets a ✓ in its name instead.
-pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
+pub fn app_menus(choice: &theme::ThemeChoice, sidebar_open: bool, fullscreen: bool) -> Vec<Menu> {
     vec![
+        // The application menu, in the order macOS apps use.
         Menu {
             name: "Reckon".into(),
-            items: vec![MenuItem::action("Quit Reckon", Quit)],
+            items: vec![
+                MenuItem::action("About Reckon", OpenAbout),
+                MenuItem::separator(),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Hide Reckon", Hide),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
+                MenuItem::separator(),
+                MenuItem::action("Quit Reckon", Quit),
+            ],
         },
         Menu {
             name: "File".into(),
@@ -148,18 +179,22 @@ pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Choose Sheets Folder…", ChooseSheetsFolder),
                 MenuItem::action("Show Sheets Folder", RevealSheetsFolder),
+                MenuItem::separator(),
+                MenuItem::action("Close Window", CloseWindow),
             ],
         },
         Menu {
             name: "Edit".into(),
             items: vec![
-                MenuItem::action("Undo", Undo),
-                MenuItem::action("Redo", Redo),
+                // Tagged as the system's edit commands, so they also work in
+                // native text fields such as the Open and Save dialogs.
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
                 MenuItem::separator(),
-                MenuItem::action("Cut", Cut),
-                MenuItem::action("Copy", Copy),
-                MenuItem::action("Paste", Paste),
-                MenuItem::action("Select All", SelectAll),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
                 MenuItem::separator(),
                 MenuItem::action("Copy Result", CopyResult),
                 MenuItem::action("Copy All", CopyAll),
@@ -170,12 +205,49 @@ pub fn app_menus(choice: &theme::ThemeChoice) -> Vec<Menu> {
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                MenuItem::action(
+                    if sidebar_open {
+                        "Hide Sidebar"
+                    } else {
+                        "Show Sidebar"
+                    },
+                    ToggleSidebar,
+                ),
+                MenuItem::separator(),
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::action("Actual Size", ZoomReset),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu {
                     name: "Theme".into(),
                     items: theme_items(choice),
                 }),
+                MenuItem::separator(),
+                MenuItem::action(
+                    if fullscreen {
+                        "Exit Full Screen"
+                    } else {
+                        "Enter Full Screen"
+                    },
+                    ToggleFullScreen,
+                ),
+            ],
+        },
+        // macOS adds its own items to a menu named "Window": the tiling
+        // commands (Fill, Center, Move & Resize, Full Screen Tile) and the
+        // list of open windows.
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Zoom", ZoomWindow),
+            ],
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![
+                MenuItem::action("Reckon User Guide", OpenHelp),
+                MenuItem::action("Report an Issue…", ReportIssue),
             ],
         },
     ]
@@ -216,14 +288,57 @@ thread_local! {
     static FONT: RefCell<SharedString> = RefCell::new(SharedString::default());
 }
 
+/// The window frame saved in app.conf (`window = x,y,w,h`), if there is one;
+/// otherwise a centred default.
+fn initial_bounds(cx: &App) -> Bounds<Pixels> {
+    let default = Bounds::centered(None, size(px(940.), px(600.)), cx);
+    let saved = conf::get("window").and_then(|v| parse_frame(&v));
+    let (Some(display), Some(saved)) = (cx.primary_display(), saved) else {
+        return default;
+    };
+    let s = display.bounds();
+    let screen = [s.origin.x, s.origin.y, s.size.width, s.size.height].map(f32::from);
+    let [x, y, w, h] = fit_frame(saved, screen);
+    Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+}
+
+/// Parses `x,y,w,h`.
+fn parse_frame(text: &str) -> Option<[f32; 4]> {
+    let v: Vec<f32> = text
+        .split(',')
+        .map(|p| p.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    v.try_into()
+        .ok()
+        .filter(|f: &[f32; 4]| f.iter().all(|n| n.is_finite()))
+}
+
+/// Fits a saved frame `[x, y, w, h]` onto a screen: no smaller than the
+/// minimum window, no larger than the screen, and wholly on it (the display
+/// it was saved on may be gone).
+fn fit_frame([x, y, w, h]: [f32; 4], [sx, sy, sw, sh]: [f32; 4]) -> [f32; 4] {
+    let w = w.max(MIN_WINDOW.0).min(sw);
+    let h = h.max(MIN_WINDOW.1).min(sh);
+    let x = x.min(sx + sw - w).max(sx);
+    let y = y.min(sy + sh - h).max(sy);
+    [x, y, w, h]
+}
+
+/// Smallest useful window: room for the sidebar, a short line and results.
+const MIN_WINDOW: (f32, f32) = (520., 320.);
+
 fn open_main(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(940.), px(600.)), cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(WindowBounds::Windowed(initial_bounds(cx))),
+        // On macOS the toolbar is drawn in the title bar, next to the window
+        // buttons, like a native unified toolbar. Windows and Linux keep
+        // their own title bar above it.
         titlebar: Some(TitlebarOptions {
             title: Some("Reckon".into()),
-            ..Default::default()
+            appears_transparent: cfg!(target_os = "macos"),
+            traffic_light_position: Some(point(px(13.), px(12.))),
         }),
+        window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
         ..Default::default()
     };
     let font = FONT.with(|f| f.borrow().clone());
@@ -248,7 +363,9 @@ fn toggle_quick(cx: &mut App) {
             return;
         }
     }
-    let (w, h) = (px(680.), px(56.));
+    // One line of text at the saved text size, plus the box's padding.
+    let line = Calc::line_height_for(Calc::saved_font_size());
+    let (w, h) = (px(680.), px(line + 28.));
     let origin = cx
         .primary_display()
         .map(|d| {
@@ -320,50 +437,104 @@ fn main() {
     if quick_only && hotkey::socket::ask_running_app() {
         return;
     }
-    Application::new().run(move |cx: &mut App| {
-        bind_keys(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.set_menus(app_menus(&theme::ThemeChoice::load()));
-        let font = editor_font(cx);
-        if std::env::var_os("RECKON_DEBUG").is_some() {
-            eprintln!("reckon-app: editor font {font}");
-        }
-        FONT.with(|f| *f.borrow_mut() = font);
+    Application::new()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            bind_keys(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_action(|_: &Hide, cx| cx.hide());
+            cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+            cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+            cx.set_menus(app_menus(
+                &theme::ThemeChoice::load(),
+                conf::get("sidebar").as_deref() != Some("hidden"),
+                false,
+            ));
+            let font = editor_font(cx);
+            if std::env::var_os("RECKON_DEBUG").is_some() {
+                eprintln!("reckon-app: editor font {font}");
+            }
+            FONT.with(|f| *f.borrow_mut() = font);
 
-        if quick_only {
-            // No app running: show just the box and quit when it closes.
-            toggle_quick(cx);
-            cx.on_window_closed(|cx| cx.quit()).detach();
-            return;
-        }
+            if quick_only {
+                // No app running: show just the box and quit when it closes.
+                toggle_quick(cx);
+                cx.on_window_closed(|cx| cx.quit()).detach();
+                return;
+            }
 
-        open_main(cx);
-        let (tx, rx) = channel();
-        #[cfg(unix)]
-        hotkey::socket::listen(tx.clone());
-        let shortcut = conf::get("quick_shortcut").unwrap_or_else(|| hotkey::DEFAULT.into());
-        match hotkey::parse(&shortcut) {
-            Some(sc) => {
-                if let Err(e) = hotkey::register(sc, tx) {
-                    if std::env::var_os("RECKON_DEBUG").is_some() {
-                        eprintln!("reckon-app: quick shortcut {}: {e}", hotkey::label(&sc));
+            open_main(cx);
+            let (tx, rx) = channel();
+            #[cfg(unix)]
+            hotkey::socket::listen(tx.clone());
+            let shortcut = conf::get("quick_shortcut").unwrap_or_else(|| hotkey::DEFAULT.into());
+            match hotkey::parse(&shortcut) {
+                Some(sc) => {
+                    if let Err(e) = hotkey::register(sc, tx) {
+                        if std::env::var_os("RECKON_DEBUG").is_some() {
+                            eprintln!("reckon-app: quick shortcut {}: {e}", hotkey::label(&sc));
+                        }
                     }
                 }
+                None => {
+                    eprintln!("reckon-app: quick_shortcut \"{shortcut}\" is not a valid shortcut")
+                }
             }
-            None => eprintln!("reckon-app: quick_shortcut \"{shortcut}\" is not a valid shortcut"),
-        }
-        listen_quick(rx, cx);
-        if std::env::var_os("RECKON_QUICK_ON_START").is_some() {
-            toggle_quick(cx);
-        }
+            listen_quick(rx, cx);
+            if std::env::var_os("RECKON_QUICK_ON_START").is_some() {
+                toggle_quick(cx);
+            }
 
-        // Closing the main window quits; closing the quick box does not.
-        cx.on_window_closed(|cx| {
-            let main_open = MAIN.with(|m| m.borrow().map(|h| h.update(cx, |_, _, _| ()).is_ok()));
-            if main_open != Some(true) {
-                cx.quit();
-            }
-        })
-        .detach();
-    });
+            // Closing the main window quits; closing the quick box does not.
+            cx.on_window_closed(|cx| {
+                let main_open =
+                    MAIN.with(|m| m.borrow().map(|h| h.update(cx, |_, _, _| ()).is_ok()));
+                if main_open != Some(true) {
+                    cx.quit();
+                }
+            })
+            .detach();
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: [f32; 4] = [0., 0., 1512., 982.];
+
+    #[test]
+    fn saved_frame_is_parsed() {
+        assert_eq!(
+            parse_frame("120, 90,700,500"),
+            Some([120., 90., 700., 500.])
+        );
+        assert_eq!(parse_frame("120,90,700"), None);
+        assert_eq!(parse_frame("a,b,c,d"), None);
+        assert_eq!(parse_frame("1,2,3,NaN"), None);
+    }
+
+    #[test]
+    fn saved_frame_is_kept_on_screen() {
+        // A frame that fits is used as it is.
+        assert_eq!(
+            fit_frame([120., 90., 700., 500.], SCREEN),
+            [120., 90., 700., 500.]
+        );
+        // One saved on a display that is gone moves back into view.
+        assert_eq!(
+            fit_frame([5000., 5000., 700., 500.], SCREEN),
+            [812., 482., 700., 500.]
+        );
+        assert_eq!(
+            fit_frame([-900., -50., 700., 500.], SCREEN),
+            [0., 0., 700., 500.]
+        );
+        // Too small or too large is brought within the limits.
+        assert_eq!(
+            fit_frame([10., 10., 50., 50.], SCREEN),
+            [10., 10., MIN_WINDOW.0, MIN_WINDOW.1]
+        );
+        assert_eq!(fit_frame([10., 10., 9000., 9000.], SCREEN), SCREEN);
+    }
 }

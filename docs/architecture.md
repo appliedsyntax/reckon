@@ -108,6 +108,47 @@ in `rates.txt`.
 
 Keyboard shortcuts use `cmd` on macOS and `ctrl` elsewhere (see `main.rs`).
 
+### Window, menus and settings
+
+The window chrome is in `calc/chrome.rs`.
+
+- **Toolbar.** A 38-point bar with the sidebar toggle, the sheet title, New
+  Sheet and Settings. On macOS the window has a transparent title bar and
+  the toolbar is drawn under the window buttons (`traffic_light_position`
+  centres them in it), which is how native unified toolbars look. AppKit
+  still moves the window when the title-bar strip is dragged; a
+  double-click calls `titlebar_double_click`, which reads the user's
+  "double-click a window's title bar to" setting. Windows and Linux keep
+  the system title bar, so snapping and the caption buttons are the
+  system's own.
+- **Menus (macOS).** `app_menus` builds the standard set: the application
+  menu (About, Settings…, Services, Hide, Hide Others, Show All, Quit),
+  File, Edit, View, Window and Help. A menu named "Window" is registered as
+  the app's windows menu, so macOS adds its tiling commands and the window
+  list to it. The Edit items are tagged with `OsAction`, so they also work
+  in system text fields such as the Open and Save dialogs. The menus are
+  rebuilt when a label or tick changes (theme, Show/Hide Sidebar,
+  Enter/Exit Full Screen). GPUI has no menu bar on Windows and Linux; the
+  toolbar and the shortcuts cover the same commands there.
+- **Shortcuts.** App and window shortcuts are bound without a key context,
+  so they work wherever the focus is; editing shortcuts are bound in the
+  `Calc` context and are off while Settings or the theme picker is open.
+- **Text size.** `font_size` drives the editor's font size, the line height
+  (1.93 × size, rounded, which is 28 at the default 14.5) and the width of
+  the results column. The app's own chrome (toolbar, sidebar, status bar,
+  panels) sets a fixed size and line height, so it does not scale.
+- **Settings.** A panel inside the main window rather than a second window:
+  it previews changes on the document behind it and behaves the same on
+  every platform. The shortcut recorder uses `intercept_keystrokes`, which
+  sees a keystroke before any key binding does, and `hotkey::rebind`
+  registers the new shortcut before releasing the old one.
+- **Window frame.** The size and position are saved in `app.conf` when they
+  change (written with the next poll, on close and on quit). On launch
+  `fit_frame` clamps the saved frame to the minimum size and the main
+  display.
+- **Icons.** Four SVGs drawn for Reckon, embedded with `include_str!` and
+  served through GPUI's `AssetSource` (`assets.rs`).
+
 ## Sheets
 
 `reckon_core::sheets` stores sheets as a folder of plain `.reckon` files,

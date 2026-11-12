@@ -327,6 +327,7 @@ impl Calc {
     /// Picks up changes made by other devices: an edited open sheet is
     /// reloaded, and added, removed or renamed sheets refresh the list.
     fn poll_sheets(&mut self, cx: &mut Context<Self>) {
+        self.save_window_bounds();
         let Some(s) = self.sheets.as_mut() else {
             return;
         };
@@ -417,6 +418,7 @@ impl Calc {
         if let Some(s) = self.sheets.as_mut() {
             s.open = !s.open;
             crate::conf::set(&[("sidebar", if s.open { "shown" } else { "hidden" }.into())]);
+            self.refresh_menus(cx);
             cx.notify();
         }
     }
@@ -538,6 +540,7 @@ impl Calc {
                 .border_color(t.divider)
                 .font_family(".SystemUIFont")
                 .text_size(px(13.))
+                .line_height(px(28.))
                 .child(
                     div()
                         .flex_none()
