@@ -1,0 +1,25 @@
+# Lists and statistics
+// New in this version. Values in square brackets make a list.
+// Delete this sheet whenever you like; it will not come back.
+
+weights = [3 kg, 500 g, 2 kg]
+Middle value: median(weights)
+Average: mean(weights)
+Spread: stdev(weights)
+
+# The lines above
+// median and stdev on their own use the lines above, like sum.
+Monday: 42
+Tuesday: 38
+Wednesday: 51
+Thursday: 45
+Typical day: median
+Spread: stdev
+
+# Straight-line fit
+// Two lists of the same length: x first, then y.
+hours = [1 h, 2 h, 3 h, 4 h]
+km = [48 km, 105 km, 149 km, 205 km]
+Speed: slope(hours, km)
+After 90 minutes: predict(hours, km, 90 min)
+How close to a line: correlation(hours, km)

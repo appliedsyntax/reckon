@@ -1,5 +1,7 @@
 //! Runtime values and how they are displayed.
 
+use std::sync::Arc;
+
 use crate::time::{civil_from_days, split, MONTHS, WEEKDAYS};
 use crate::tz::Zone;
 use crate::units::{Conv, Unit, UnitCtx};
@@ -42,11 +44,35 @@ pub struct DateTime {
     pub live: bool,
 }
 
+/// Several numbers that share one unit: `[3 kg, 500 g]` is held as
+/// 3 and 0.5 kilograms. Statistics functions take these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct List {
+    pub v: Vec<f64>,
+    pub unit: Unit,
+    /// The numbers are percentages (and `unit` is empty).
+    pub percent: bool,
+}
+
+impl List {
+    /// The number `x` as a value in this list's unit.
+    pub fn value(&self, x: f64) -> Value {
+        if self.percent {
+            Value::Percent(x)
+        } else {
+            Value::qty(x, self.unit.clone())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Num(Quantity),
     Percent(f64),
     Time(DateTime),
+    /// Shared, so that copying a list into a variable or a result costs
+    /// nothing however long it is.
+    List(Arc<List>),
 }
 
 impl Value {
@@ -70,6 +96,7 @@ impl Value {
             Value::Num(q) => Some(q.v),
             Value::Percent(p) => Some(*p),
             Value::Time(t) => Some(t.utc),
+            Value::List(_) => None,
         }
     }
 }
@@ -187,7 +214,45 @@ pub fn format_value(v: &Value, ucx: &UnitCtx, s: &Settings) -> String {
         Value::Percent(p) => format!("{}%", format_number(*p, s.precision, s)),
         Value::Time(t) => format_datetime(t, s),
         Value::Num(q) => format_quantity(q, ucx, s),
+        Value::List(l) => format_list(l, ucx, s),
     }
+}
+
+/// Longest list written out in full, in characters. Results sit in a
+/// narrow column, so a longer list shows its first values and a count.
+const LIST_WIDTH: usize = 24;
+
+/// `[1200, 3.5, 8]`, or `[48 km, … 12 values]` when that would be too wide.
+/// Digits are not grouped and the separator avoids the decimal mark, so a
+/// list shown in full can be pasted back in as the same list.
+fn format_list(l: &List, ucx: &UnitCtx, s: &Settings) -> String {
+    let plain = Settings {
+        group_sep: None,
+        ..s.clone()
+    };
+    let sep = if s.decimal_sep == ',' { "; " } else { ", " };
+    let width = |t: &str| t.chars().count();
+    // No more values than this can fit, however short they are.
+    let shown: Vec<String> =
+        l.v.iter()
+            .take(LIST_WIDTH / 2)
+            .map(|x| format_value(&l.value(*x), ucx, &plain))
+            .collect();
+    let full = format!("[{}]", shown.join(sep));
+    if shown.len() == l.v.len() && width(&full) <= LIST_WIDTH {
+        return full;
+    }
+    let count = format!("… {} values]", l.v.len());
+    let mut text = String::from("[");
+    for (i, item) in shown.iter().enumerate() {
+        let wide = width(&text) + width(item) + width(sep) + width(&count) > LIST_WIDTH;
+        if i > 0 && wide {
+            break;
+        }
+        text.push_str(item);
+        text.push_str(sep);
+    }
+    text + &count
 }
 
 fn format_quantity(q: &Quantity, ucx: &UnitCtx, s: &Settings) -> String {

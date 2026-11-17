@@ -34,16 +34,21 @@ text ─► prepare ─► lexer ─► classify ─► parser ─► eval ─�
    phrase first (`nautical miles`, `New York`, `multiplied by`). Its
    priority order is: assignment target, keyword, variable, function, scale,
    constant, unit, zone, month. Words that match nothing are **dropped**,
-   which is why prose like `prev - 5% discount` works.
+   which is why prose like `prev - 5% discount` works. Statistics names
+   that are also everyday words (`count`, `slope`) are functions only when
+   a `(` follows, so notes that use them keep their results.
 4. **parser** (`parser.rs`) is recursive descent. From loosest to tightest
    binding:
    conversion (`in`/`as`, `as a % of`) → `|` → `xor` → `&` → shifts →
    `+ -` → `* / mod` and implicit juxtaposition → `of / on / off` → unary
    minus → `^` → postfix (units, `%`, `!`, scales, `am/pm`, zones, `ago`,
    `from now`) → primary.
-5. **eval** (`eval.rs`) works on three kinds of `Value`: `Num(Quantity)`
-   (a number with a compound unit and a display format), `Percent`, and
-   `Time(DateTime)`.
+5. **eval** (`eval.rs`) works on four kinds of `Value`: `Num(Quantity)`
+   (a number with a compound unit and a display format), `Percent`,
+   `Time(DateTime)` and `List` (numbers that share one unit, converted when
+   the list is written). The statistics themselves are in `stats.rs`, on
+   plain numbers; two of its tests compare against NIST reference data
+   sets.
 6. **format** (`value.rs`) handles grouping, precision, currency symbols,
    radix formats and date display.
 
@@ -96,15 +101,29 @@ in `rates.txt`.
 
 `reckon-app` is one GPUI view (`calc.rs`):
 
-- A custom `Element` lays out and paints the editor: highlighted text runs,
-  the selection, the cursor and the active line. It implements
-  `EntityInputHandler`, so IME composition, the character palette and dead
-  keys work.
-- The results column is a list of normal GPUI `div`s, one per line at the
-  same line height. Clicking a result copies it.
+- A custom `Element` lays out and paints the whole document on one
+  surface: highlighted text runs, the selection, the cursor, the band on
+  the active line, and each result, right-aligned on the first visual line
+  of its row. It implements `EntityInputHandler`, so IME composition, the
+  character palette and dead keys work. Clicking a result copies it; each
+  one has a hitbox for the pointing-hand cursor and a hover tint.
+- Long lines wrap before the space kept for results. `Wraps` records how
+  the document's lines ("rows") are cut into visual lines ("segments");
+  GPUI's `LineWrapper` finds the break points from character widths, so no
+  line has to be shaped to know the document's height. Lines too short to
+  reach the edge skip even that. The result is kept until the text, the
+  width or the text size changes. The element asks for a measured layout,
+  because its height depends on its width. Up, Down, Home and End move by
+  visual line.
 - Every edit re-evaluates the whole document, which takes well under a
   millisecond for typical documents, and autosaves it.
-- Exchange rates refresh on a background executor when stale.
+- Exchange rates refresh on a background executor when stale: at start,
+  and from the sheet-polling timer while the window stays open (it can be
+  open for days). After a failed attempt the next one waits 30 minutes.
+- On macOS the editor font is the system's monospaced interface font
+  (family `.AppleSystemUIFontMonospaced`, which is SF Mono), asked for by
+  name so that every weight is available. Loading `SFNSMono.ttf` directly
+  yields a single face, and it is the Light one.
 
 Keyboard shortcuts use `cmd` on macOS and `ctrl` elsewhere (see `main.rs`).
 
@@ -167,6 +186,17 @@ trash and listing behave the same everywhere.
   reload it when another device changed it; the folder's own modification
   time tells them when sheets were added, removed or renamed.
 - Deleting moves a sheet into `.trash` inside the folder; Undo moves it back.
+- Sample sheets (`crates/reckon-core/samples/`, listed in `SAMPLES`) are
+  compiled into the engine, so all three apps get them from `prepare`
+  without code of their own. `prepare` adds each one once per folder and
+  records its id in a hidden `.samples` file there. The record is in the
+  folder, not in app settings, so a deleted sample stays deleted and a
+  synced folder gets one copy. A new sample is dated one second before
+  the sheet that is about to open: the list is ordered by date, so it
+  sits second, and it is never the newest sheet, which is what opens when
+  no sheet is remembered. To ship another, add a file and a line to
+  `SAMPLES`; a test checks that every line of every sample gives a result
+  that fits the results column.
 
 ## Quick calc (desktop)
 
@@ -191,8 +221,12 @@ draws the same colours from one table:
 - Each theme has 23 colours (background, results column, text, result,
   the nine highlight classes, cursor, selection, rules, status bar, picker
   surfaces…) plus its finishing touches: a texture (`grid`, `ruled`,
-  `scanlines` or none), a single or double divider, the result weight and
-  a bar or block cursor.
+  `scanlines` or none), a single or double divider, the weight of the text
+  and of the results, and a bar or block cursor.
+- The desktop app draws text and results on one surface. It does not use
+  the results-column colour or the single divider; the two themes built
+  around a ruled margin (Ledger, Delft) keep their double rule. The phone
+  apps still use both.
 - Tests in `themes.rs` check WCAG contrast for every theme: text at least
   7:1, results and highlights at least 4.5:1.
 - The desktop app reads the table directly. The iOS and Android apps get it
@@ -235,6 +269,11 @@ untrusted.
 - **Plugin functions.** A line may make 10,000 user-function calls; the
   nesting limit of 32 alone would allow functions that call each other
   twice to do billions of evaluations.
+- **Lists.** A list holds at most 10,000 numbers and is shared, not copied,
+  when it is assigned or shown. The lists written in one document hold at
+  most 100,000 numbers in total, because every line's result is kept while
+  the sheet is open. A statistics function counts against the call budget
+  above, one call for every 64 numbers it works through.
 - **Rates.** `curl` is restricted to HTTPS (also after redirects) and to a
   1 MB response. The JSON reader stops at 32 levels and 1 MB. Rates must be
   positive, finite numbers with alphanumeric codes, and the update time is

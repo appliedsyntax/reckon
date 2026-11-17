@@ -42,6 +42,9 @@ pub fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<(usize, char)> = src.char_indices().collect();
     let end_of = |i: usize| -> usize { chars.get(i).map(|c| c.0).unwrap_or(src.len()) };
     let mut out = Vec::new();
+    // Inside `[...]` a comma separates list values, so `[1,200]` is two
+    // numbers there and one thousand two hundred everywhere else.
+    let mut brackets = 0usize;
     let mut i = 0;
     while i < chars.len() {
         let (start, c) = chars[i];
@@ -49,10 +52,15 @@ pub fn tokenize(src: &str) -> Vec<Token> {
             i += 1;
             continue;
         }
+        match c {
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            _ => {}
+        }
         if c.is_ascii_digit()
             || (c == '.' && chars.get(i + 1).is_some_and(|n| n.1.is_ascii_digit()))
         {
-            let (tok, next) = lex_number(&chars, i);
+            let (tok, next) = lex_number(&chars, i, brackets == 0);
             out.push(Token {
                 tok,
                 span: start..end_of(next),
@@ -132,7 +140,8 @@ fn parse_u32(chars: &[(usize, char)], from: usize, to: usize) -> u32 {
         .fold(0u32, |a, c| a * 10 + c.1.to_digit(10).unwrap_or(0))
 }
 
-fn lex_number(chars: &[(usize, char)], i: usize) -> (Tok, usize) {
+/// `comma_groups` allows a comma between groups of three digits.
+fn lex_number(chars: &[(usize, char)], i: usize, comma_groups: bool) -> (Tok, usize) {
     let c = chars[i].1;
     // Radix prefixes.
     if c == '0' {
@@ -199,6 +208,7 @@ fn lex_number(chars: &[(usize, char)], i: usize) -> (Tok, usize) {
         loop {
             let sep = chars.get(j).map(|c| c.1);
             if matches!(sep, Some(' ') | Some(',') | Some('\u{a0}'))
+                && (comma_groups || sep != Some(','))
                 && exact_digits(chars, j + 1, 3)
             {
                 text.extend(chars[j + 1..j + 4].iter().map(|c| c.1));
@@ -270,6 +280,21 @@ mod tests {
                 value: 1500.0,
                 radix: 10
             }]
+        );
+        let num = |value| Tok::Num { value, radix: 10 };
+        assert_eq!(
+            toks("[1,200]"),
+            vec![
+                Tok::Sym('['),
+                num(1.0),
+                Tok::Sym(','),
+                num(200.0),
+                Tok::Sym(']')
+            ]
+        );
+        assert_eq!(
+            toks("[1] 1,200"),
+            vec![Tok::Sym('['), num(1.0), Tok::Sym(']'), num(1200.0)]
         );
         assert_eq!(toks("2:30"), vec![Tok::Time { h: 2, m: 30, s: 0 }]);
         assert_eq!(

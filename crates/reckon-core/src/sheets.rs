@@ -235,6 +235,12 @@ pub fn read(dir: &Path, file: &str) -> io::Result<String> {
 /// destination that is not an ordinary file is left alone.
 pub fn write(dir: &Path, file: &str, text: &str) -> io::Result<()> {
     check_name(file)?;
+    write_file(dir, file, text)
+}
+
+/// [`write`] for any file name, including the hidden ones Reckon keeps in
+/// the folder itself.
+fn write_file(dir: &Path, file: &str, text: &str) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let dest = dir.join(file);
     if let Ok(meta) = fs::symlink_metadata(&dest) {
@@ -334,9 +340,66 @@ pub fn restore(dir: &Path, trashed: &Path) -> io::Result<String> {
     Ok(name)
 }
 
+/// Sheets that come with the app besides the welcome sheet, as (id, text).
+/// Each one shows a feature, and is added to a sheets folder once: on a new
+/// installation, or on the first start after the update that brings it.
+pub const SAMPLES: &[(&str, &str)] =
+    &[("statistics", include_str!("../samples/statistics.reckon"))];
+
+/// Hidden file in a sheets folder that lists the ids of the samples already
+/// added to it, one per line. It lives in the folder, not in the app's
+/// settings, so that a sample someone deleted stays deleted and a folder
+/// synced between devices gets one copy instead of one from each device.
+pub const SAMPLES_SEEN: &str = ".samples";
+
+/// Adds the samples this folder has not had yet. Each is dated just before
+/// `open`, the sheet about to be shown: the list is ordered by date, so a
+/// new sample sits right under that sheet, where it is seen, and is never
+/// the newest sheet, which is the one that opens when none is remembered.
+fn add_samples(dir: &Path, open: &str) {
+    let mut seen = read_path(&dir.join(SAMPLES_SEEN)).unwrap_or_default();
+    let new: Vec<&(&str, &str)> = SAMPLES
+        .iter()
+        .filter(|(id, _)| !seen.lines().any(|line| line.trim() == *id))
+        .collect();
+    if new.is_empty() {
+        return;
+    }
+    if !seen.is_empty() && !seen.ends_with('\n') {
+        seen.push('\n');
+    }
+    for (id, _) in &new {
+        seen.push_str(id);
+        seen.push('\n');
+    }
+    // Record them first. If the folder cannot be written to, it is better
+    // to add nothing than another copy on every start.
+    if write_file(dir, SAMPLES_SEEN, &seen).is_err() {
+        return;
+    }
+    let before_open = fs::metadata(dir.join(open))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.checked_sub(Duration::from_secs(1)));
+    for (_, text) in new {
+        let Ok(name) = create(dir, text) else {
+            continue;
+        };
+        // Opened for writing: Windows will not change a date otherwise.
+        let path = dir.join(&name);
+        let regular = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
+        if let (Some(when), true) = (before_open, regular) {
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
+                let _ = file.set_modified(when);
+            }
+        }
+    }
+}
+
 /// Sets up a sheets folder: moves an old single-document file into it, or
-/// creates a first sheet from `welcome` when the folder has none. Returns
-/// the sheet to open.
+/// creates a first sheet from `welcome` when the folder has none, and adds
+/// any sample sheets that are new to the folder. Returns the sheet to open,
+/// which is never one of those samples.
 pub fn prepare(dir: &Path, legacy: Option<&Path>, welcome: &str) -> io::Result<String> {
     fs::create_dir_all(dir)?;
     remove_stale_temps(dir);
@@ -344,12 +407,15 @@ pub fn prepare(dir: &Path, legacy: Option<&Path>, welcome: &str) -> io::Result<S
         let text = read_path(old)?;
         let name = create(dir, &text)?;
         fs::remove_file(old)?;
+        add_samples(dir, &name);
         return Ok(name);
     }
-    match list(dir).into_iter().next() {
-        Some(s) => Ok(s.file),
-        None => create(dir, welcome),
-    }
+    let open = match list(dir).into_iter().next() {
+        Some(newest) => newest.file,
+        None => create(dir, welcome)?,
+    };
+    add_samples(dir, &open);
+    Ok(open)
 }
 
 /// [`list`] as JSON, for the C interface.
@@ -435,6 +501,64 @@ mod tests {
             prepare(&empty, None, "# Welcome").unwrap(),
             "Welcome.reckon"
         );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn samples_are_added_once() {
+        let titles = |d: &Path| -> Vec<String> { list(d).into_iter().map(|s| s.title).collect() };
+        let sample = "Lists and statistics".to_string();
+
+        // A new installation gets the sample, and opens the welcome sheet.
+        let d = temp("samples-new");
+        assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Welcome.reckon");
+        let mut got = titles(&d);
+        got.sort();
+        assert_eq!(got, [sample.clone(), "Welcome".to_string()]);
+        // Starting again adds nothing, and still opens the welcome sheet.
+        assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Welcome.reckon");
+        assert_eq!(list(&d).len(), 2);
+        // A deleted sample stays deleted.
+        trash(&d, "Lists and statistics.reckon").unwrap();
+        prepare(&d, None, "# Welcome").unwrap();
+        assert_eq!(titles(&d), ["Welcome"]);
+        let _ = fs::remove_dir_all(&d);
+
+        // An update: the folder has sheets but has never had the sample.
+        // It is added, and the sheet that opens is still the user's own.
+        let d = temp("samples-update");
+        create(&d, "# Mine\n1 + 1").unwrap();
+        assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Mine.reckon");
+        // The sample is listed right under it, and does not take its place
+        // on the next start either.
+        assert_eq!(titles(&d), ["Mine".to_string(), sample]);
+        assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Mine.reckon");
+        // The record survives a later sample being added to it.
+        fs::write(d.join(SAMPLES_SEEN), "something-older").unwrap();
+        prepare(&d, None, "# Welcome").unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join(SAMPLES_SEEN)).unwrap(),
+            "something-older\nstatistics\n"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn samples_are_not_added_when_the_record_cannot_be_kept() {
+        // A link where the record goes: nothing is written through it, and
+        // without a record no sample is added (or it would be added again
+        // on every start).
+        let d = temp("samples-link");
+        let target = d.join("elsewhere.txt");
+        fs::write(&target, "keep").unwrap();
+        let sheets = d.join("sheets");
+        fs::create_dir_all(&sheets).unwrap();
+        std::os::unix::fs::symlink(&target, sheets.join(SAMPLES_SEEN)).unwrap();
+        create(&sheets, "# Mine").unwrap();
+        prepare(&sheets, None, "# Welcome").unwrap();
+        assert_eq!(list(&sheets).len(), 1);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
         let _ = fs::remove_dir_all(&d);
     }
 

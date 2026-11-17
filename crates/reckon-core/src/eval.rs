@@ -1,12 +1,14 @@
 //! Evaluates parsed expressions into values.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::parser::{BinOp, Expr, Pct, Target};
+use crate::stats::{self, Fit};
 use crate::time::{add_months, civil_from_days, days_from_civil, days_in_month, split};
 use crate::tz::Zone;
 use crate::units::{dim, Conv, Unit, UnitCtx, ANGLE, DIM_COUNT, TIME};
-use crate::value::{DateTime, Quantity, Show, Value};
+use crate::value::{DateTime, List, Quantity, Show, Value};
 use crate::{Engine, UserFn};
 
 /// State carried from line to line within one document.
@@ -21,7 +23,20 @@ pub struct DocState {
     pub prev: Option<Value>,
     /// Results since the last blank line or header (`sum`, `avg`).
     pub block: Vec<Value>,
+    /// Numbers put into lists so far in this document (see
+    /// [`MAX_DOC_LIST_VALUES`]).
+    pub list_values: usize,
 }
+
+/// Most numbers one list holds.
+const MAX_LIST_VALUES: usize = 10_000;
+/// Most numbers all the lists written in one document hold. Every result is
+/// kept for as long as the sheet is open, so without a limit a small sheet
+/// that keeps doubling a list could use all the memory there is.
+const MAX_DOC_LIST_VALUES: usize = 100_000;
+/// Numbers a statistics function works through for the cost of one function
+/// call (see [`crate::MAX_CALLS`]).
+const VALUES_PER_CALL: usize = 64;
 
 impl Default for DocState {
     fn default() -> Self {
@@ -31,6 +46,7 @@ impl Default for DocState {
             em_px: 16.0,
             prev: None,
             block: Vec::new(),
+            list_values: 0,
         }
     }
 }
@@ -57,7 +73,7 @@ fn map_num(v: Value, f: impl Fn(f64) -> f64) -> R {
     match v {
         Value::Num(q) => Ok(Value::Num(Quantity { v: f(q.v), ..q })),
         Value::Percent(p) => Ok(Value::Percent(f(p))),
-        Value::Time(_) => Err("expected a number".into()),
+        Value::Time(_) | Value::List(_) => Err("expected a number".into()),
     }
 }
 
@@ -135,6 +151,18 @@ impl<'a> Eval<'a> {
                 self.convert(v, t)
             }
             Expr::Call(name, args) => self.call(name, args),
+            Expr::List(items) => {
+                let vals: Vec<Value> = items
+                    .iter()
+                    .map(|e| self.eval(e))
+                    .collect::<Result<_, _>>()?;
+                let list = self.gather(&vals, true)?;
+                self.st.list_values += list.v.len();
+                if self.st.list_values > MAX_DOC_LIST_VALUES {
+                    return Err("this sheet has too many list values".into());
+                }
+                Ok(Value::List(Arc::new(list)))
+            }
             Expr::Fact(e) => {
                 let v = self.eval(e)?;
                 self.factorial(v)
@@ -607,7 +635,7 @@ impl<'a> Eval<'a> {
         let mut count = 0usize;
         for v in self.st.block.clone() {
             acc = match acc {
-                None if !matches!(v, Value::Time(_)) => {
+                None if matches!(v, Value::Num(_) | Value::Percent(_)) => {
                     count = 1;
                     Some(v)
                 }
@@ -653,6 +681,13 @@ impl<'a> Eval<'a> {
             .iter()
             .map(|a| self.eval(a))
             .collect::<Result<_, _>>()?;
+        match name {
+            "sum" | "mean" | "median" | "stdev" | "stddev" | "pstdev" | "variance"
+            | "pvariance" | "count" => return self.describe(name, vals),
+            "correlation" | "correl" | "corr" | "slope" | "intercept" | "rsquared" | "r2"
+            | "predict" => return self.regress(name, &vals),
+            _ => {}
+        }
         let arg = |i: usize| -> Result<Value, String> {
             vals.get(i)
                 .cloned()
@@ -756,7 +791,187 @@ impl<'a> Eval<'a> {
         for (p, v) in f.params.iter().zip(vals) {
             st.vars.insert(p.clone(), v);
         }
-        self.eng
-            .eval_expression(&f.body, &mut st, self.now, self.depth + 1)
+        let result = self
+            .eng
+            .eval_expression(&f.body, &mut st, self.now, self.depth + 1);
+        self.st.list_values = st.list_values;
+        result
+    }
+
+    // --------------------------------------------------------- statistics
+
+    /// Puts numbers and lists into one list, in the unit of the first value
+    /// that has one. `strict` fails on a value that does not fit; otherwise
+    /// such values are left out, the way `sum` leaves them out.
+    fn gather(&self, vals: &[Value], strict: bool) -> Result<List, String> {
+        let is_percent = |v: &Value| match v {
+            Value::Percent(_) => Some(true),
+            Value::Num(_) => Some(false),
+            Value::List(l) if !l.v.is_empty() => Some(l.percent),
+            _ => None,
+        };
+        let percent = vals.iter().find_map(is_percent).unwrap_or(false);
+        let unit = vals
+            .iter()
+            .filter(|_| !percent)
+            .find_map(|v| match v {
+                Value::Num(q) if !q.unit.is_none() => Some(q.unit.clone()),
+                Value::List(l) if !l.unit.is_none() => Some(l.unit.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let ucx = self.ucx();
+        let fit = |x: f64, from: &Unit| -> Result<f64, String> {
+            if from.is_none() || *from == unit {
+                Ok(x)
+            } else {
+                ucx.convert(x, from, &unit)
+            }
+        };
+        let mixed = || Err::<(), String>("cannot mix percentages and numbers".into());
+        let mut out = Vec::new();
+        for v in vals {
+            let before = out.len();
+            let added = match v {
+                Value::Percent(p) if percent => {
+                    out.push(*p);
+                    Ok(())
+                }
+                Value::Num(q) if !percent => fit(q.v, &q.unit).map(|x| out.push(x)),
+                Value::List(l) if l.v.is_empty() => Ok(()),
+                Value::List(l) if l.percent == percent => {
+                    l.v.iter()
+                        .try_for_each(|x| fit(*x, &l.unit).map(|x| out.push(x)))
+                }
+                Value::Time(_) => Err("dates cannot go in a list".into()),
+                _ => mixed(),
+            };
+            match added {
+                Ok(()) => {}
+                Err(e) if strict => return Err(e),
+                Err(_) => out.truncate(before),
+            }
+            if out.len() > MAX_LIST_VALUES {
+                return Err("list is too long".into());
+            }
+        }
+        Ok(List {
+            v: out,
+            unit,
+            percent,
+        })
+    }
+
+    /// Counts work on `n` numbers against the line's function-call budget,
+    /// so that a function calling `median` thousands of times cannot hang
+    /// the app.
+    fn charge(&self, n: usize) -> Result<(), String> {
+        let cost = (n / VALUES_PER_CALL + 1) as u32;
+        let calls = self
+            .eng
+            .calls
+            .fetch_add(cost, std::sync::atomic::Ordering::Relaxed);
+        if calls >= crate::MAX_CALLS {
+            return Err("too many function calls".into());
+        }
+        Ok(())
+    }
+
+    /// One number that describes many: `median(3, 1, 2)`, `stdev(prices)`,
+    /// or `median` alone for the lines above.
+    fn describe(&mut self, name: &str, vals: Vec<Value>) -> R {
+        let averaging = matches!(name, "sum" | "mean");
+        if averaging && vals.is_empty() {
+            return self.aggregate(name == "mean");
+        }
+        // `sum (2)` has always meant "the sum, times 2".
+        if averaging && vals.len() == 1 && !matches!(vals[0], Value::List(_)) {
+            let total = self.aggregate(name == "mean")?;
+            return self.implicit(total, vals.into_iter().next().unwrap());
+        }
+        let list = if vals.is_empty() {
+            self.aggregate = true;
+            self.gather(&self.st.block, false)?
+        } else {
+            self.gather(&vals, true)?
+        };
+        let n = list.v.len();
+        self.charge(n)?;
+        let at_least = |k: usize| -> Result<(), String> {
+            if n >= k {
+                return Ok(());
+            }
+            let values = if k == 1 { "one value" } else { "two values" };
+            Err(format!("{name} needs at least {values}"))
+        };
+        // A variance is in squared units.
+        let squared = |x: f64| {
+            if list.percent || list.unit.is_none() {
+                Value::num(x)
+            } else {
+                Value::qty(x, list.unit.powi(2))
+            }
+        };
+        match name {
+            "count" => Ok(Value::num(n as f64)),
+            "sum" => Ok(list.value(list.v.iter().sum())),
+            "mean" => at_least(1).map(|()| list.value(stats::mean(&list.v))),
+            "median" => at_least(1).map(|()| list.value(stats::median(&list.v))),
+            "stdev" | "stddev" => {
+                at_least(2).map(|()| list.value(stats::variance(&list.v, true).sqrt()))
+            }
+            "pstdev" => at_least(1).map(|()| list.value(stats::variance(&list.v, false).sqrt())),
+            "variance" => at_least(2).map(|()| squared(stats::variance(&list.v, true))),
+            _ => at_least(1).map(|()| squared(stats::variance(&list.v, false))),
+        }
+    }
+
+    /// The straight line through points given as a list of x and a list of
+    /// y: `slope(x, y)`, `intercept(x, y)`, `predict(x, y, 12)`.
+    fn regress(&mut self, name: &str, vals: &[Value]) -> R {
+        let wanted = if name == "predict" { 3 } else { 2 };
+        let (Some(Value::List(x)), Some(Value::List(y)), true) =
+            (vals.first(), vals.get(1), vals.len() == wanted)
+        else {
+            return Err(match name {
+                "predict" => "predict needs two lists and a value: predict(x, y, 12)".into(),
+                _ => format!("{name} needs two lists: {name}(x, y)"),
+            });
+        };
+        if x.v.len() != y.v.len() {
+            return Err("the two lists must hold the same number of values".into());
+        }
+        if x.v.len() < 2 {
+            return Err(format!("{name} needs at least two points"));
+        }
+        self.charge(x.v.len())?;
+        let fit = Fit::new(&x.v, &y.v);
+        let no_line = || "there is no line when every x is the same".to_string();
+        let no_r = || "there is no correlation when a list never changes".to_string();
+        match name {
+            "slope" => {
+                let rise = y.value(fit.slope().ok_or_else(no_line)?);
+                if x.unit.is_none() || y.percent {
+                    return Ok(rise);
+                }
+                self.mul(rise, Value::qty(1.0, x.unit.clone()), true)
+            }
+            "intercept" => Ok(y.value(fit.intercept().ok_or_else(no_line)?)),
+            "predict" => {
+                let at = match &vals[2] {
+                    Value::Percent(p) if x.percent => *p,
+                    Value::Num(q) if !x.percent && q.unit.is_none() => q.v,
+                    Value::Num(q) if !x.percent => self.ucx().convert(q.v, &q.unit, &x.unit)?,
+                    _ => return Err("the value for x must be like the values in the list".into()),
+                };
+                let (a, b) = (
+                    fit.intercept().ok_or_else(no_line)?,
+                    fit.slope().ok_or_else(no_line)?,
+                );
+                Ok(y.value(a + b * at))
+            }
+            "rsquared" | "r2" => Ok(Value::num(fit.correlation().ok_or_else(no_r)?.powi(2))),
+            _ => Ok(Value::num(fit.correlation().ok_or_else(no_r)?)),
+        }
     }
 }

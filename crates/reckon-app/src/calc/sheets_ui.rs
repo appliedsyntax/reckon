@@ -280,6 +280,10 @@ impl Calc {
             for sheet in &s.list {
                 let _ = std::fs::copy(s.dir.join(&sheet.file), dir.join(&sheet.file));
             }
+            // The copies include any sample sheets, so the record of which
+            // samples this folder has had goes along with them.
+            let seen = sheets::SAMPLES_SEEN;
+            let _ = std::fs::copy(s.dir.join(seen), dir.join(seen));
         }
         let Ok(first) = sheets::prepare(&dir, None, WELCOME) else {
             self.set_status("Could not use that folder");
@@ -328,6 +332,7 @@ impl Calc {
     /// reloaded, and added, removed or renamed sheets refresh the list.
     fn poll_sheets(&mut self, cx: &mut Context<Self>) {
         self.save_window_bounds();
+        self.refresh_stale_rates(cx);
         let Some(s) = self.sheets.as_mut() else {
             return;
         };

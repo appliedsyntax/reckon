@@ -116,6 +116,184 @@ fn variables_prev_sum_avg() {
 }
 
 #[test]
+fn lists() {
+    check(&[
+        ("[1, 2, 3]", "[1, 2, 3]"),
+        ("[1; 2; 3]", "[1, 2, 3]"),
+        // Inside brackets a comma always separates values.
+        ("[1,200,300]", "[1, 200, 300]"),
+        ("[1200, 2.5]", "[1200, 2.5]"),
+        ("[3 kg, 500 g, 2 kg]", "[3 kg, 0.5 kg, 2 kg]"),
+        ("[10%, 20%]", "[10%, 20%]"),
+        ("[$10, $12.50, €9]", "[$10, $12.50, $10.47]"),
+        ("[1, 2, 3, 4, 5, 6, 7]", "[1, 2, 3, 4, 5, 6, 7]"),
+        // A list too wide for the results column shows how many it holds.
+        ("[48 km, 105 km, 149 km, 205 km]", "[48 km, … 4 values]"),
+        ("[1; 2; 3; 4; 5; 6; 7; 8; 9; 10]", "[1, 2, 3, … 10 values]"),
+        (
+            "[123456789.123, 2, 3, 4, 5, 6, 7, 8]",
+            "[123456789.123, … 8 values]",
+        ),
+        ("[]", "[]"),
+        ("x = [1, 2]\nx = [x, 3]\nx", "[1, 2, 3]"),
+        ("x = [1, 2]\nprev", "[1, 2]"),
+        // A list is not one of the lines `sum` adds up.
+        ("5\n[1, 2]\n10\nsum", "15"),
+        (
+            "[1, 2 kg, 3%]",
+            "<no result: Some(\"cannot mix percentages and numbers\")>",
+        ),
+        (
+            "[1 kg, 2 m]",
+            "<no result: Some(\"cannot convert m to kg\")>",
+        ),
+        (
+            "[today, 1]",
+            "<no result: Some(\"dates cannot go in a list\")>",
+        ),
+        (
+            "[1, 2] + 1",
+            "<no result: Some(\"cannot combine these values\")>",
+        ),
+    ]);
+}
+
+#[test]
+fn statistics() {
+    check(&[
+        ("median(3, 1, 2)", "2"),
+        ("median(1, 2, 3, 4)", "2.5"),
+        ("median([3, 1, 2])", "2"),
+        ("median [3, 1, 2]", "2"),
+        ("x = [3, 1, 2]\nmedian(x, 10)", "2.5"),
+        ("stdev(2, 4, 4, 4, 5, 5, 7, 9)", "2.1381"),
+        ("stddev(2, 4, 4, 4, 5, 5, 7, 9)", "2.1381"),
+        ("pstdev(2, 4, 4, 4, 5, 5, 7, 9)", "2"),
+        ("variance(2, 4, 4, 4, 5, 5, 7, 9)", "4.5714"),
+        ("pvariance(2, 4, 4, 4, 5, 5, 7, 9)", "4"),
+        ("sum([1, 2, 3])", "6"),
+        ("sum(1, 2, 3)", "6"),
+        ("mean([1, 2, 3, 6])", "3"),
+        ("avg(2, 4)", "3"),
+        ("average([2, 4])", "3"),
+        ("count([4, 5, 6])", "3"),
+        ("stdev([1, 2, 3, 4]) * 2", "2.582"),
+        // Units and percentages carry through.
+        ("median(3 kg, 500 g, 2 kg)", "2 kg"),
+        ("stdev(1 m, 3 m)", "1.4142 m"),
+        ("variance(1 m, 3 m)", "2 m²"),
+        ("median(10%, 20%, 60%)", "20%"),
+        ("mean([$10, $12.50, €9])", "$10.99"),
+        // With nothing in the parentheses, or none, the lines above.
+        ("10\n20\n60\nmedian", "20"),
+        ("10\n20\n60\nmedian + 1", "21"),
+        ("10\n20\n60\nstdev", "26.4575"),
+        ("10\n20\n60\ncount()", "3"),
+        ("10\n20\n60\nmedian\nmedian", "20"),
+        ("$10\n$20\ntoday\n5%\nmedian", "$15"),
+        ("10\n20\n\n4\n6\n8\nmedian", "6"),
+        ("10\n20\nsum()", "30"),
+        // `sum (2)` keeps its old meaning: the sum, times two.
+        ("10\n20\nsum (2)", "60"),
+        (
+            "stdev(5)",
+            "<no result: Some(\"stdev needs at least two values\")>",
+        ),
+        (
+            "median([])",
+            "<no result: Some(\"median needs at least one value\")>",
+        ),
+        (
+            "median(1, 2%)",
+            "<no result: Some(\"cannot mix percentages and numbers\")>",
+        ),
+    ]);
+}
+
+#[test]
+fn straight_line_fits() {
+    let xy = "x = [1, 2, 3, 4, 5]\ny = [2, 4, 5, 4, 5]\n";
+    let trip = "hours = [1 h, 2 h, 3 h]\nkm = [50 km, 100 km, 150 km]\n";
+    let with = |lines: &str, last: &str| format!("{lines}{last}");
+    let cases = [
+        (with(xy, "slope(x, y)"), "0.6"),
+        (with(xy, "intercept(x, y)"), "2.2"),
+        (with(xy, "correlation(x, y)"), "0.7746"),
+        (with(xy, "corr(x, y)"), "0.7746"),
+        (with(xy, "correl(y, x)"), "0.7746"),
+        (with(xy, "rsquared(x, y)"), "0.6"),
+        (with(xy, "r2(x, y)"), "0.6"),
+        (with(xy, "predict(x, y, 10)"), "8.2"),
+        (with(xy, "slope(x, y) * 10 + intercept(x, y)"), "8.2"),
+        (with("", "slope([1, 2, 3], [3, 5, 7])"), "2"),
+        (with("", "correlation([1, 2, 3], [9, 5, 1])"), "-1"),
+        // Units: kilometres against hours is a speed.
+        (with(trip, "slope(hours, km)"), "50 km/h"),
+        (with(trip, "intercept(hours, km)"), "0 km"),
+        (with(trip, "predict(hours, km, 90 min)"), "75 km"),
+        (with(trip, "correlation(hours, km)"), "1"),
+        (
+            with("", "slope([1, 1], [2, 3])"),
+            "<no result: Some(\"there is no line when every x is the same\")>",
+        ),
+        (
+            with("", "correlation([1, 2], [3, 3])"),
+            "<no result: Some(\"there is no correlation when a list never changes\")>",
+        ),
+        (
+            with("", "slope([1, 2, 3], [1, 2])"),
+            "<no result: Some(\"the two lists must hold the same number of values\")>",
+        ),
+        (
+            with("", "slope([1, 2], 3)"),
+            "<no result: Some(\"slope needs two lists: slope(x, y)\")>",
+        ),
+        (
+            with(trip, "predict(hours, km, 5 kg)"),
+            "<no result: Some(\"cannot convert kg to h\")>",
+        ),
+    ];
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(a, b)| (a.as_str(), *b)).collect();
+    check(&cases);
+}
+
+/// The sample sheets that come with the app show features, so every line
+/// that is not a heading or a note has to give a result.
+#[test]
+fn sample_sheets_give_a_result_on_every_line() {
+    for (id, text) in reckon_core::sheets::SAMPLES {
+        let out = engine().evaluate(text);
+        for (line, o) in text.lines().zip(&out) {
+            let wanted = o.kind == LineKind::Expr;
+            assert_eq!(
+                o.text.is_some(),
+                wanted,
+                "{id}: {line:?} gave {:?}",
+                o.error
+            );
+            // Results sit in a narrow column, most of all on a phone.
+            let width = o.text.as_deref().map_or(0, |t| t.chars().count());
+            assert!(width <= 24, "{id}: {line:?} gives {width} characters");
+        }
+    }
+}
+
+/// These words were ignored in notes before they became functions, and a
+/// note that uses them must keep its result.
+#[test]
+fn statistics_words_in_notes() {
+    check(&[
+        ("median price 500", "500"),
+        ("50000 median income", "50,000"),
+        ("$5 slope", "$5"),
+        ("correlation 0.9", "0.9"),
+        ("head count 12", "12"),
+        ("intercept 4 + 1", "5"),
+        ("12 count", "12"),
+    ]);
+}
+
+#[test]
 fn css() {
     check(&[
         ("12 pt in px", "16 px"),

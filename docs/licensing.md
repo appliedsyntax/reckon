@@ -93,7 +93,7 @@ uses each system's own monospaced font:
 
 | Platform | Font | Fallback |
 |---|---|---|
-| macOS | SF Mono, loaded from the system at runtime | Menlo |
+| macOS | SF Mono, as the system's monospaced font | Menlo |
 | iOS | SF Mono (`monospacedSystemFont`) | — |
 | Android | System monospace (`Typeface.MONOSPACE`) | — |
 | Windows | Cascadia Mono | Consolas |

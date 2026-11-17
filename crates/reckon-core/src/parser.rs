@@ -121,7 +121,62 @@ pub const BUILTIN_FUNCS: &[&str] = &[
     "cosh",
     "tanh",
     "fromunix",
+    "median",
+    "stdev",
+    "stddev",
+    "pstdev",
+    "variance",
+    "pvariance",
+    "count",
+    "correlation",
+    "correl",
+    "corr",
+    "slope",
+    "intercept",
+    "rsquared",
+    "r2",
+    "predict",
 ];
+
+/// Functions that also work with no arguments, on the lines above, the way
+/// `sum` does: `median`, `stdev - 2`.
+const BLOCK_FUNCS: &[&str] = &[
+    "median",
+    "stdev",
+    "stddev",
+    "pstdev",
+    "variance",
+    "pvariance",
+];
+
+/// Functions whose names are ordinary words in notes ("head count 12",
+/// "slope 5%"). They are functions only when written as a call.
+const CALL_ONLY_FUNCS: &[&str] = &[
+    "count",
+    "correlation",
+    "correl",
+    "corr",
+    "slope",
+    "intercept",
+    "rsquared",
+    "r2",
+    "predict",
+];
+
+/// Whether a function name at this position is a call or a word in a note.
+fn is_call(name: &str, prev: Option<&Item>, next: Option<&Tok>) -> bool {
+    if CALL_ONLY_FUNCS.contains(&name) {
+        return matches!(next, Some(Tok::Sym('(')));
+    }
+    if BLOCK_FUNCS.contains(&name) {
+        // "$50,000 median income" keeps meaning $50,000.
+        return !matches!(
+            prev,
+            Some(Item::Num(..) | Item::Unit(_) | Item::Scale(_) | Item::Sym(')' | '%' | ']'))
+        );
+    }
+    true
+}
 
 fn keyword(lw: &str) -> Option<Kw> {
     Some(match lw {
@@ -294,7 +349,9 @@ pub fn classify(toks: &[Token], cx: &ClassifyCtx) -> Vec<It> {
                         Some(Item::Sym('%'))
                     } else if let Some(k) = keyword(&lw) {
                         Some(Item::Kw(k))
-                    } else if (cx.is_func)(&lw) {
+                    } else if (cx.is_func)(&lw)
+                        && is_call(&lw, prev_item.as_ref(), toks.get(i + 1).map(|t| &t.tok))
+                    {
                         Some(Item::Func(lw.clone()))
                     } else if prev_is_num && scale(w).is_some() {
                         Some(Item::Scale(scale(w).unwrap()))
@@ -319,13 +376,15 @@ pub fn classify(toks: &[Token], cx: &ClassifyCtx) -> Vec<It> {
     out
 }
 
+/// Inside the parentheses of a call or the brackets of a list, where a
+/// comma separates values.
 fn in_call(out: &[It]) -> bool {
     let mut depth = 0i32;
     for it in out.iter().rev() {
         match it.item {
-            Item::Sym(')') => depth += 1,
-            Item::Sym('(') if depth == 0 => return true,
-            Item::Sym('(') => depth -= 1,
+            Item::Sym(')' | ']') => depth += 1,
+            Item::Sym('(' | '[') if depth == 0 => return true,
+            Item::Sym('(' | '[') => depth -= 1,
             _ => {}
         }
     }
@@ -404,6 +463,8 @@ pub enum Expr {
     AsPct(Pct, Box<Expr>, Box<Expr>),
     Convert(Box<Expr>, Target),
     Call(String, Vec<Expr>),
+    /// `[1, 2, 3]`
+    List(Vec<Expr>),
     Fact(Box<Expr>),
     Prev,
     Sum,
@@ -661,7 +722,7 @@ impl<'a> Parser<'a> {
                 | Item::Func(_)
                 | Item::Var(_),
             )
-            | Some(Item::Const(_) | Item::Zone(_) | Item::Month(_) | Item::Sym('(')) => true,
+            | Some(Item::Const(_) | Item::Zone(_) | Item::Month(_) | Item::Sym('(' | '[')) => true,
             Some(Item::Kw(k)) => {
                 matches!(
                     k,
@@ -836,9 +897,15 @@ impl<'a> Parser<'a> {
 
     fn parse_args(&mut self) -> Result<Vec<Expr>, String> {
         // assumes current item is '('
+        self.parse_values(')')
+    }
+
+    /// Values separated by `,` or `;` up to `close`. The opening bracket
+    /// is the current item; a missing closing one is forgiven.
+    fn parse_values(&mut self, close: char) -> Result<Vec<Expr>, String> {
         self.pos += 1;
         let mut args = Vec::new();
-        if self.is_sym(')') {
+        if self.is_sym(close) {
             self.pos += 1;
             return Ok(args);
         }
@@ -848,7 +915,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 continue;
             }
-            if self.is_sym(')') {
+            if self.is_sym(close) {
                 self.pos += 1;
             }
             break;
@@ -901,9 +968,15 @@ impl<'a> Parser<'a> {
                 Expr::WithUnit(Box::new(inner), unit)
             }
             Item::Unit(u) => Expr::WithUnit(Box::new(Expr::Num(1.0)), u),
+            Item::Sym('[') => {
+                self.pos -= 1;
+                Expr::List(self.parse_values(']')?)
+            }
             Item::Func(name) => {
                 let mut args = if self.is_sym('(') {
                     self.parse_args()?
+                } else if BLOCK_FUNCS.contains(&name.as_str()) && !self.starts_operand() {
+                    Vec::new()
                 } else {
                     vec![self.parse_unary()?]
                 };
@@ -913,6 +986,10 @@ impl<'a> Parser<'a> {
                 Expr::Call(name, args)
             }
             Item::Kw(Kw::Prev) => Expr::Prev,
+            // `sum(prices)` and `mean(4, 8)` take values; alone they use
+            // the lines above.
+            Item::Kw(Kw::Sum) if self.is_sym('(') => Expr::Call("sum".into(), self.parse_args()?),
+            Item::Kw(Kw::Avg) if self.is_sym('(') => Expr::Call("mean".into(), self.parse_args()?),
             Item::Kw(Kw::Sum) => Expr::Sum,
             Item::Kw(Kw::Avg) => Expr::Avg,
             Item::Kw(Kw::Now) | Item::Kw(Kw::Time) => Expr::Now(None),

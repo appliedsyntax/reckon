@@ -56,11 +56,15 @@ fn deep_nesting_does_not_overflow_the_stack() {
         "1 ".repeat(n),
         "$".repeat(n),
         format!("{}1", "$(".repeat(n)),
+        "[".repeat(n),
+        format!("{}1{}", "[".repeat(n), "]".repeat(n)),
+        format!("median({}", "[1, ".repeat(n)),
         // Short enough to be parsed, but nested past the limit.
         format!("{}1", "(".repeat(300)),
         format!("{}1", "-".repeat(300)),
         format!("{}2", "2^".repeat(150)),
         format!("{}4", "sqrt(".repeat(150)),
+        format!("{}1", "[".repeat(300)),
         // Short enough to be parsed, but with too many terms.
         format!("1{}", "+1".repeat(300)),
     ] {
@@ -93,6 +97,8 @@ fn the_deepest_allowed_lines_fit_on_the_small_stack() {
         format!("{}1{}", "(".repeat(40), ")".repeat(40)),
         format!("{}1", "-".repeat(90)),
         format!("{}2", "1^".repeat(40)),
+        format!("{}1{}", "[".repeat(40), "]".repeat(40)),
+        format!("median([1{}])", "; 1".repeat(190)),
     ] {
         assert!(last_result(sheet.clone()).is_some(), "{sheet}");
     }
@@ -136,6 +142,59 @@ fn the_call_budget_is_per_line() {
         results,
         [Some("4,096".to_string()), Some("4,096".to_string())]
     );
+}
+
+#[test]
+fn lists_stop_growing_at_their_limits() {
+    // A list that doubles on every line stops at the most one list holds.
+    let mut sheet = String::from("a = [1; 2; 3; 4; 5; 6; 7; 8]\n");
+    sheet.push_str(&"a = [a; a]\n".repeat(40));
+    sheet.push_str("count(a)");
+    assert_eq!(last_result(sheet).as_deref(), Some("8,192"));
+
+    // Every result is kept while the sheet is open, so thousands of lines
+    // that each build another long list must stop too. Reusing a list is
+    // free and still works afterwards.
+    let mut sheet = String::from("a = [1; 2; 3; 4; 5; 6; 7; 8]\n");
+    sheet.push_str(&"a = [a; a]\n".repeat(10));
+    sheet.push_str(&"[a; 1]\n".repeat(5_000));
+    let started = Instant::now();
+    let out = on_small_stack(move || {
+        let mut out = engine().evaluate(&format!("{sheet}a\ncount(a)\n[a; 1]"));
+        let last = out.pop().unwrap();
+        let count = out.pop().unwrap();
+        let built = out.iter().filter(|o| o.text.is_some()).count();
+        (built, count.text, last.error)
+    });
+    assert!(out.0 < 40, "{} lists were built", out.0);
+    assert_eq!(out.1.as_deref(), Some("8,192"));
+    assert_eq!(
+        out.2.as_deref(),
+        Some("this sheet has too many list values")
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn statistics_in_functions_stop_at_the_call_budget() {
+    // Each call sorts 8,192 numbers; without a budget the 2^20 calls here
+    // would take hours.
+    let mut src = String::new();
+    for i in 1..20 {
+        src.push_str(&format!("fn g{i}(x) = g{}(x) + g{}(x)\n", i + 1, i + 1));
+    }
+    src.push_str("fn g20(x) = median(x)\n");
+    let mut sheet = String::from("a = [1; 2; 3; 4; 5; 6; 7; 8]\n");
+    sheet.push_str(&"a = [a; a]\n".repeat(10));
+    sheet.push_str("g1(a)");
+    let started = Instant::now();
+    let result = on_small_stack(move || {
+        let mut e = engine();
+        e.load_plugin("stats", &src).unwrap();
+        e.evaluate(&sheet).pop().unwrap()
+    });
+    assert_eq!(result.error.as_deref(), Some("too many function calls"));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[test]

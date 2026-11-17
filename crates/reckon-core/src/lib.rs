@@ -18,6 +18,7 @@ pub mod parser;
 pub mod paths;
 pub mod plugin;
 pub mod sheets;
+pub mod stats;
 pub mod themes;
 pub mod time;
 pub mod tz;
@@ -32,7 +33,7 @@ pub use currency::Rates;
 pub use eval::DocState;
 pub use parser::Hl;
 pub use tz::Zone;
-pub use value::{format_value, NumFmt, Settings, Show, Value};
+pub use value::{format_value, List, NumFmt, Settings, Show, Value};
 
 use eval::Eval;
 use parser::{classify, highlight_class, ClassifyCtx, Parser, BUILTIN_FUNCS};
@@ -330,7 +331,8 @@ impl Engine {
                 };
                 out.text = Some(format_value(&v, &ucx, &self.settings));
                 st.prev = Some(v.clone());
-                if !aggregate {
+                // A list is not one of the numbers `sum` adds up.
+                if !aggregate && !matches!(v, Value::List(_)) {
                     st.block.push(v.clone());
                 }
                 out.value = Some(v);

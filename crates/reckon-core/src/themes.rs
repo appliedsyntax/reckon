@@ -12,8 +12,10 @@
 //!   numbers and the other syntax colours at least 4.5:1 (WCAG AA).
 //!   Comments are meant to recede, but stay at 2.2:1 or more.
 //! - The result is the "answer", so it gets the theme's signature colour
-//!   and a heavier weight. Labels are quieter than text, and comments are
-//!   the quietest.
+//!   and a heavier weight. Labels name the lines, so they take the heading
+//!   colour and are drawn bold. Comments are the quietest.
+//! - Dark themes draw their text semibold: light strokes on a dark
+//!   background look thinner than the same strokes in ink on paper.
 //! - Five syntax hues at most, chosen to sit together.
 
 use crate::Hl;
@@ -134,6 +136,8 @@ pub struct ThemeSpec {
     pub double_divider: bool,
     /// Font weight of results (400 regular … 700 bold).
     pub result_weight: u16,
+    /// Font weight of the text being edited.
+    pub text_weight: u16,
     /// A translucent block cursor instead of a bar (where the platform
     /// allows it).
     pub block_cursor: bool,
@@ -160,13 +164,14 @@ pub fn themes_json() -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"name\":\"{}\",\"blurb\":\"{}\",\"dark\":{},\"pattern\":\"{}\",\"double_divider\":{},\"result_weight\":{},\"block_cursor\":{},\"colors\":{{",
+            "{{\"name\":\"{}\",\"blurb\":\"{}\",\"dark\":{},\"pattern\":\"{}\",\"double_divider\":{},\"result_weight\":{},\"text_weight\":{},\"block_cursor\":{},\"colors\":{{",
             t.name,
             t.blurb,
             t.dark,
             t.pattern.name(),
             t.double_divider,
             t.result_weight,
+            t.text_weight,
             t.block_cursor
         ));
         for (j, (k, v)) in t.c.fields().iter().enumerate() {
@@ -208,13 +213,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xa94f1cff,
             function: 0x45691fff,
             operator: 0x767166ff,
-            label: 0x6f695eff,
+            label: 0xbf3a24ff,
             comment: 0xaaa293ff,
             header: 0xbf3a24ff,
         },
         pattern: Pattern::Grid,
         double_divider: false,
         result_weight: 600,
+        text_weight: 500,
         block_cursor: false,
     },
     ThemeSpec {
@@ -242,13 +248,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0x82520eff,
             function: 0x2e6b4fff,
             operator: 0x5e6f64ff,
-            label: 0x55665bff,
+            label: 0xb3261eff,
             comment: 0x98a290ff,
             header: 0xb3261eff,
         },
         pattern: Pattern::Ruled,
         double_divider: true,
         result_weight: 700,
+        text_weight: 500,
         block_cursor: false,
     },
     ThemeSpec {
@@ -276,13 +283,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0x2f6690ff,
             function: 0x80600fff,
             operator: 0x7b6856ff,
-            label: 0x7b6955ff,
+            label: 0xa3401fff,
             comment: 0xb09c84ff,
             header: 0xa3401fff,
         },
         pattern: Pattern::None,
         double_divider: false,
         result_weight: 600,
+        text_weight: 500,
         block_cursor: false,
     },
     ThemeSpec {
@@ -310,13 +318,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xab4d29ff,
             function: 0x2a7553ff,
             operator: 0x617283ff,
-            label: 0x5d6e7eff,
+            label: 0x24467aff,
             comment: 0x9aa8b6ff,
             header: 0x24467aff,
         },
         pattern: Pattern::None,
         double_divider: false,
         result_weight: 600,
+        text_weight: 500,
         block_cursor: false,
     },
     ThemeSpec {
@@ -344,13 +353,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xb0562aff,
             function: 0x4a7835ff,
             operator: 0x856874ff,
-            label: 0x86656fff,
+            label: 0xa8325fff,
             comment: 0xbc9ea9ff,
             header: 0xa8325fff,
         },
         pattern: Pattern::None,
         double_divider: false,
         result_weight: 600,
+        text_weight: 500,
         block_cursor: false,
     },
     ThemeSpec {
@@ -378,24 +388,25 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0x9b3b28ff,
             function: 0x1b6f80ff,
             operator: 0x5b6690ff,
-            label: 0x535e88ff,
+            label: 0x1d3fa6ff,
             comment: 0x9ea6c0ff,
             header: 0x1d3fa6ff,
         },
         pattern: Pattern::None,
         double_divider: true,
         result_weight: 700,
+        text_weight: 500,
         block_cursor: false,
     },
     // ----------------------------------------------------------------- dark
     ThemeSpec {
         name: "Graphite",
-        blurb: "Soft pencil on charcoal, mint answers",
+        blurb: "White chalk on charcoal, mint answers",
         dark: true,
         c: Colors {
             bg: 0x18191bff,
             results_bg: 0x1d1f22ff,
-            text: 0xe6e4dfff,
+            text: 0xffffffff,
             muted: 0x8b8f96ff,
             result: 0x7fe0a6ff,
             selection: 0x2e3b55ff,
@@ -407,19 +418,20 @@ pub static THEMES: &[ThemeSpec] = &[
             highlight: 0x2e3238ff,
             status_bg: 0x161719ff,
             rule: 0x00000000,
-            number: 0xf2c46dff,
-            unit: 0x7cc4d6ff,
+            number: 0xffffffff,
+            unit: 0xffffffff,
             keyword: 0xc9a2f2ff,
             variable: 0x8fb5ffff,
             function: 0xa6d987ff,
-            operator: 0xa9adb4ff,
-            label: 0x9da1a8ff,
-            comment: 0x5f656dff,
+            operator: 0xffffffff,
+            label: 0xf2c46dff,
+            comment: 0x7f858dff,
             header: 0xff9b73ff,
         },
         pattern: Pattern::None,
         double_divider: false,
-        result_weight: 600,
+        result_weight: 700,
+        text_weight: 600,
         block_cursor: false,
     },
     ThemeSpec {
@@ -447,13 +459,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xb9e6a1ff,
             function: 0xf7c08aff,
             operator: 0xc9d2cbff,
-            label: 0xa9b8aeff,
+            label: 0xf7c08aff,
             comment: 0x6d8275ff,
             header: 0xf7c08aff,
         },
         pattern: Pattern::None,
         double_divider: false,
         result_weight: 700,
+        text_weight: 600,
         block_cursor: false,
     },
     ThemeSpec {
@@ -481,13 +494,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xa6f0d9ff,
             function: 0xffb38aff,
             operator: 0x9dbbdbff,
-            label: 0x9dbbdbff,
+            label: 0xffc27aff,
             comment: 0x5f84aeff,
             header: 0xffc27aff,
         },
         pattern: Pattern::Grid,
         double_divider: false,
         result_weight: 700,
+        text_weight: 600,
         block_cursor: false,
     },
     ThemeSpec {
@@ -515,13 +529,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0x9db7ffff,
             function: 0xf5d08bff,
             operator: 0xa39dc4ff,
-            label: 0xa39dc4ff,
+            label: 0xc3a6ffff,
             comment: 0x5e587aff,
             header: 0xc3a6ffff,
         },
         pattern: Pattern::None,
         double_divider: false,
-        result_weight: 600,
+        result_weight: 700,
+        text_weight: 600,
         block_cursor: false,
     },
     ThemeSpec {
@@ -549,13 +564,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0xd9a6c2ff,
             function: 0xa9c98aff,
             operator: 0xb39f8aff,
-            label: 0xb39f8aff,
+            label: 0xe9806eff,
             comment: 0x6e5f52ff,
             header: 0xe9806eff,
         },
         pattern: Pattern::None,
         double_divider: false,
         result_weight: 700,
+        text_weight: 600,
         block_cursor: false,
     },
     ThemeSpec {
@@ -583,13 +599,14 @@ pub static THEMES: &[ThemeSpec] = &[
             variable: 0x9bffc0ff,
             function: 0x7cf0a0ff,
             operator: 0x5fc985ff,
-            label: 0x5fc985ff,
+            label: 0xffd27aff,
             comment: 0x2e6b42ff,
             header: 0xffd27aff,
         },
         pattern: Pattern::Scanlines,
         double_divider: false,
         result_weight: 700,
+        text_weight: 600,
         block_cursor: true,
     },
 ];

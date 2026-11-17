@@ -10,7 +10,6 @@ mod hotkey;
 mod input;
 mod theme;
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver};
 
@@ -119,16 +118,15 @@ fn bind_keys(cx: &mut App) {
 
 /// Picks the editor font: a monospaced face so digits and operators line up.
 ///
-/// macOS keeps SF Mono as a hidden system font (family `.SF NS Mono`) that
-/// cannot be looked up by name, so it is loaded from the system font folder
-/// at startup. Nothing is bundled. Other platforms use their usual monospace
-/// fonts, and the system UI font is the last resort.
+/// On macOS that is SF Mono, asked for as the system's monospaced interface
+/// font, which comes in every weight. (Loading its file, `SFNSMono.ttf`,
+/// gives one weight only, and the lightest: the text looks faint and
+/// headings and results cannot be bold.) Nothing is bundled. Other
+/// platforms use their usual monospace fonts, and the system UI font is the
+/// last resort.
 fn editor_font(cx: &App) -> SharedString {
     let ts = cx.text_system();
     if cfg!(target_os = "macos") {
-        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNSMono.ttf") {
-            let _ = ts.add_fonts(vec![Cow::Owned(bytes)]);
-        }
         // Ask for each font by name. Listing every installed font to see
         // which exist took about 150 ms, half of the whole start-up.
         let found = |name: &'static str| {
@@ -137,7 +135,7 @@ fn editor_font(cx: &App) -> SharedString {
             let got = ts.get_font_for_id(ts.resolve_font(&wanted));
             got.is_some_and(|f| f.family == wanted.family)
         };
-        return [".SF NS Mono", "SF Mono", "Menlo"]
+        return [".AppleSystemUIFontMonospaced", "SF Mono", "Menlo"]
             .into_iter()
             .find(|name| found(name))
             .unwrap_or("Menlo")
@@ -382,7 +380,7 @@ fn toggle_quick(cx: &mut App) {
     }
     // One line of text at the saved text size, plus the box's padding.
     let line = Calc::line_height_for(Calc::saved_font_size());
-    let (w, h) = (px(680.), px(line + 28.));
+    let (w, h) = (px(680.), px(line + 2. * Calc::QUICK_PAD_Y));
     let origin = cx
         .primary_display()
         .map(|d| {

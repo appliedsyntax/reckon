@@ -12,7 +12,6 @@ use reckon_core::Hl;
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub bg: Hsla,
-    pub results_bg: Hsla,
     pub text: Hsla,
     pub muted: Hsla,
     pub result: Hsla,
@@ -31,6 +30,8 @@ pub struct Theme {
     pub pattern: Pattern,
     pub double_divider: bool,
     pub result_weight: FontWeight,
+    /// Weight of the text being edited.
+    pub text_weight: FontWeight,
     pub block_cursor: bool,
     index: usize,
 }
@@ -46,7 +47,6 @@ impl Theme {
         let c = &t.c;
         Theme {
             bg: hsla(c.bg),
-            results_bg: hsla(c.results_bg),
             text: hsla(c.text),
             muted: hsla(c.muted),
             result: hsla(c.result),
@@ -62,6 +62,7 @@ impl Theme {
             pattern: t.pattern,
             double_divider: t.double_divider,
             result_weight: FontWeight(t.result_weight as f32),
+            text_weight: FontWeight(t.text_weight as f32),
             block_cursor: t.block_cursor,
             index,
         }

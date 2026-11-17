@@ -17,6 +17,11 @@ lines above it.
 
 A colon between digits (`2:30`) is a time, not a label.
 
+In the desktop app a line too long for the window wraps onto the next line;
+its result stays beside its first line. ↑ and ↓ move through the wrapped
+lines one at a time, and Home and End (⌘← and ⌘→ on a Mac) go to the ends of
+the one the cursor is on.
+
 ## Operators
 
 | Operation | Symbols and words |
@@ -85,7 +90,8 @@ Use ISO codes (`USD`, `EUR`, `JPY`, …), names (`dollars`, `euros`, `yen`,
 `$30 CAD` means 30 Canadian dollars. In a sum of mixed currencies, the result
 is in the first value's currency: `$30 CAD + 5 USD - 7 EUR` → `25.64 CAD`.
 
-The app refreshes rates when they are more than 12 hours old. The CLI
+The app refreshes rates when they are more than 12 hours old, at start and
+while it stays open. The CLI
 refreshes them with `reckon --update-rates`. Until the first refresh,
 built-in approximate rates are used. Rates are cached in the data folder (see
 [Files](#files)).
@@ -139,6 +145,72 @@ function name directly.
 | `fromunix` | `fromunix(1446587186)` |
 
 Plugins can add more; see [plugins.md](plugins.md).
+
+## Lists and statistics
+
+A list is several values in square brackets, separated by commas or
+semicolons. It can be kept in a variable.
+
+```text
+weights = [3 kg, 500 g, 2 kg]     → [3 kg, 0.5 kg, 2 kg]
+median(weights)                   → 2 kg
+stdev(weights)                    → 1.2583 kg
+```
+
+A list too wide for the results column shows its first values and a count:
+`[48 km, … 12 values]`.
+
+The values of a list share one unit: the first unit written. Inside the
+brackets a comma always separates values, so `[1,200]` is two numbers; write
+`1200` for twelve hundred. A list can be built from other lists:
+`all = [weights, 4 kg]`.
+
+| Function | Result |
+|---|---|
+| `sum`, `mean` (or `avg`, `average`) | Total and average |
+| `median` | Middle value |
+| `stdev` (or `stddev`), `variance` | Sample standard deviation and variance (divide by n − 1) |
+| `pstdev`, `pvariance` | The same for a whole population (divide by n) |
+| `count` | How many values |
+
+Each takes a list, several values, or both: `median(3, 1, 2)`,
+`mean(weights, 4 kg)`. `median`, `stdev`, `variance`, `pstdev` and
+`pvariance` written alone use the lines above, exactly as `sum` does:
+
+```text
+10
+20
+60
+median                → 20
+stdev                 → 26.4575
+```
+
+### Straight-line fit
+
+These take the x values first and the y values second, as two lists of the
+same length. This is the opposite order to `SLOPE` and `INTERCEPT` in
+spreadsheets.
+
+```text
+hours = [1 h, 2 h, 3 h, 4 h]
+km = [48 km, 105 km, 149 km, 205 km]
+slope(hours, km)                  → 51.5 km/h
+intercept(hours, km)              → -2 km
+predict(hours, km, 90 min)        → 75.25 km
+correlation(hours, km)            → 0.9988
+```
+
+| Function | Result |
+|---|---|
+| `slope(x, y)` | Change in y for each unit of x |
+| `intercept(x, y)` | Value of y where x is zero |
+| `predict(x, y, value)` | Value of y on the line at the given x |
+| `correlation(x, y)` (or `corr`, `correl`) | Pearson correlation, from −1 to 1 |
+| `rsquared(x, y)` (or `r2`) | Share of the variation in y that the line explains |
+
+The line is fitted by ordinary least squares. `count` and the functions in
+this table are only functions when followed by `(`, so a note such as
+`head count 12` still gives 12.
 
 ## Dates and times
 
@@ -271,6 +343,19 @@ sheet is a plain `.reckon` file named after its title; the file is renamed
 when you switch to another sheet, never while you type. Deleted sheets move
 to a `.trash` folder inside the sheets folder rather than being erased.
 
+### Sample sheets
+
+A new installation starts with a welcome sheet. When a version of Reckon
+brings a feature worth showing, it also adds one sample sheet for it, on a
+new installation and on the first start after the update. The first is
+"Lists and statistics".
+
+A sample appears in the list just below the sheet you had open; it never
+replaces the sheet you are working on. It is an ordinary sheet: edit it, or
+delete it and it does not come back. Reckon records which samples a sheets
+folder has had in a hidden `.samples` file inside the folder, so a folder
+synced between devices gets one copy, not one from each device.
+
 ### Syncing between devices
 
 Sheets are ordinary files, so any folder-syncing service keeps them in step
@@ -320,7 +405,7 @@ twelve themes, each built around one idea:
 
 | Light | | Dark | |
 |---|---|---|---|
-| **Paper** (default) | Warm graph paper and fountain-pen ink | **Graphite** (default) | Soft pencil on charcoal, mint answers |
+| **Paper** (default) | Warm graph paper and fountain-pen ink | **Graphite** (default) | White chalk on charcoal, mint answers |
 | **Ledger** | Bookkeeper's green paper with red rules | **Chalkboard** | Slate green board, coloured chalk |
 | **Dune** | Sand, terracotta and desert sage | **Blueprint** | Drafting-table blue with a white grid |
 | **Fjord** | Crisp Nordic air, slate and glacier teal | **Nocturne** | Indigo midnight, violet and aqua |
@@ -385,6 +470,9 @@ are unlikely to meet them in normal use.
 - A sheet larger than 4 MB is not opened or listed.
 - A line longer than 8,000 bytes, or with more than 400 numbers, words and
   operators, or nested more than about 45 parentheses deep, gets no result.
+- A list holds at most 10,000 values, and all the lists written in one
+  sheet at most 100,000. One line fits about 200 plain numbers; join lists
+  to make a longer one.
 - Shortcuts and links in the sheets folder (symbolic links) are ignored;
   sheets must be ordinary files.
 

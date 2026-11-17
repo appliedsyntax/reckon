@@ -2,14 +2,16 @@
 //! on the right. The editor is a custom GPUI element (no web views, no
 //! widget library) with IME support through `EntityInputHandler`.
 
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, fill, point, prelude::*, px, relative, size, AnyElement, App, Bounds,
-    ClickEvent, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, Font, FontWeight, GlobalElementId, LayoutId,
+    actions, canvas, div, fill, point, prelude::*, px, relative, size, AnyElement, App,
+    AvailableSpace, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, CursorStyle,
+    DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
+    Focusable, Font, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, LayoutId, LineFragment,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathPromptOptions,
     Pixels, Point, ScrollHandle, ShapedLine, SharedString, Style, Subscription, TextRun,
     UTF16Selection, Window,
@@ -158,8 +160,18 @@ fn swatch_el(halves: [[gpui::Hsla; 3]; 2], theme: &Theme) -> impl IntoElement {
 pub const DEFAULT_FONT_SIZE: f32 = 14.5;
 const MIN_FONT_SIZE: f32 = 10.5;
 const MAX_FONT_SIZE: f32 = 30.5;
-const PAD_X: Pixels = px(18.);
-const PAD_Y: Pixels = px(14.);
+/// Space around the document: left of the text, right of the results, and
+/// above the first line.
+const PAD_X: Pixels = px(32.);
+const PAD_Y: Pixels = px(20.);
+/// The quick-calc box is one line in a small window, so it keeps less.
+const QUICK_PAD_X: Pixels = px(18.);
+/// Side padding of the status bar.
+const BAR_PAD_X: Pixels = px(18.);
+/// Space kept between the end of a wrapped line and the results.
+const RESULTS_GAP: Pixels = px(16.);
+/// After a failed attempt to fetch exchange rates, wait this long.
+const RATES_RETRY: Duration = Duration::from_secs(30 * 60);
 /// Scrolling can be clamped to the previous frame's content size, so keep
 /// correcting for a few frames until the cursor really is visible.
 const AUTOSCROLL_FRAMES: u8 = 3;
@@ -201,6 +213,72 @@ struct Snapshot {
     sel: Range<usize>,
 }
 
+/// How the document is cut into the lines that are drawn. A line of the
+/// document (a "row", one result each) that is too long for the text column
+/// wraps onto several visual lines ("segments"), all one line height tall.
+#[derive(Default)]
+struct Wraps {
+    /// What this was worked out for: the text (hashed), the width text may
+    /// run to, and the text size. `None` until the first time.
+    key: Option<(u64, Option<u32>, u32)>,
+    /// Offset in the text where each segment starts.
+    seg_start: Vec<usize>,
+    /// The first segment of each row, then the number of segments.
+    row_seg: Vec<usize>,
+}
+
+impl Wraps {
+    fn segs(&self) -> usize {
+        self.seg_start.len()
+    }
+
+    fn rows(&self) -> usize {
+        self.row_seg.len().saturating_sub(1)
+    }
+
+    /// The segment that holds `offset`. An offset where a line wraps
+    /// belongs to the segment that starts there.
+    fn seg_of(&self, offset: usize) -> usize {
+        self.seg_start
+            .partition_point(|s| *s <= offset)
+            .saturating_sub(1)
+    }
+
+    fn row_of_seg(&self, seg: usize) -> usize {
+        self.row_seg
+            .partition_point(|s| *s <= seg)
+            .saturating_sub(1)
+            .min(self.rows().saturating_sub(1))
+    }
+
+    /// The segments of a row.
+    fn row_segs(&self, row: usize) -> Range<usize> {
+        self.row_seg[row]..self.row_seg[row + 1]
+    }
+
+    /// Whether the line continues on the next segment.
+    fn wraps_after(&self, seg: usize) -> bool {
+        seg + 1 < self.segs() && self.row_seg.binary_search(&(seg + 1)).is_err()
+    }
+
+    /// The text of a segment, without the line break that ends a row.
+    fn seg_range(&self, seg: usize, text_len: usize) -> Range<usize> {
+        let start = self.seg_start[seg];
+        let end = match self.seg_start.get(seg + 1) {
+            None => text_len,
+            Some(next) if self.wraps_after(seg) => *next,
+            Some(next) => next - 1,
+        };
+        start..end.max(start)
+    }
+
+    /// The text of a row, without its line break.
+    fn row_range(&self, row: usize, text_len: usize) -> Range<usize> {
+        let segs = self.row_segs(row);
+        self.seg_start[segs.start]..self.seg_range(segs.end - 1, text_len).end
+    }
+}
+
 pub struct Calc {
     focus: FocusHandle,
     text: String,
@@ -213,7 +291,18 @@ pub struct Calc {
     typing: bool,
     engine: Engine,
     outputs: Vec<LineOutput>,
+    /// The shaped text of each segment that was last drawn (an empty
+    /// placeholder for the ones out of view).
     layouts: Vec<ShapedLine>,
+    wraps: Wraps,
+    /// Width text may run to before it wraps (None: never wrap).
+    wrap_width: Option<Pixels>,
+    /// Width of the document area, text and results together.
+    doc_width: Pixels,
+    /// Where each result was last drawn, and the row it belongs to.
+    result_hits: Vec<(Bounds<Pixels>, usize)>,
+    /// When exchange rates were last asked for.
+    rates_tried: Option<Instant>,
     bounds: Option<Bounds<Pixels>>,
     scroll: ScrollHandle,
     /// Frames left in which to bring the cursor into view (0 = done).
@@ -282,6 +371,11 @@ impl Calc {
             engine,
             outputs: Vec::new(),
             layouts: Vec::new(),
+            wraps: Wraps::default(),
+            wrap_width: None,
+            doc_width: px(0.),
+            result_hits: Vec::new(),
+            rates_tried: None,
             bounds: None,
             scroll: ScrollHandle::new(),
             autoscroll: AUTOSCROLL_FRAMES,
@@ -322,9 +416,10 @@ impl Calc {
                 calc.set_status(msg);
             }
             if calc.engine.rates_stale() {
-                calc.refresh_rates(cx);
+                calc.refresh_rates(false, cx);
             }
         }
+        calc.ensure_wraps(window);
         calc.outputs = calc.engine.evaluate(&calc.text);
         crate::trace("view: evaluated");
         calc
@@ -353,11 +448,127 @@ impl Calc {
         px(Self::line_height_for(self.font_size))
     }
 
-    /// Width of the results column, which grows with the text size.
+    /// Width kept for results at the right, which grows with the text size
+    /// and never takes more than half of a narrow window.
     fn results_w(&self) -> Pixels {
-        px((260. * self.font_size / DEFAULT_FONT_SIZE)
-            .clamp(210., 440.)
-            .round())
+        let wanted = px((274. * self.font_size / DEFAULT_FONT_SIZE)
+            .clamp(220., 460.)
+            .round());
+        if self.doc_width > px(0.) {
+            wanted.min(self.doc_width * 0.5)
+        } else {
+            wanted
+        }
+    }
+
+    /// Height of the quick-calc box above and below its one line.
+    pub const QUICK_PAD_Y: f32 = 14.;
+
+    fn pad_x(&self) -> Pixels {
+        if self.quick {
+            QUICK_PAD_X
+        } else {
+            PAD_X
+        }
+    }
+
+    fn pad_y(&self) -> Pixels {
+        if self.quick {
+            px(Self::QUICK_PAD_Y)
+        } else {
+            PAD_Y
+        }
+    }
+
+    // ------------------------------------------------------------ wrapping
+
+    /// Notes the width of the document area, and from it how far text may
+    /// run before it wraps: up to a gap before the results.
+    fn set_doc_width(&mut self, width: Pixels) {
+        self.doc_width = width;
+        // The quick box is a single line; a long one is clipped instead.
+        self.wrap_width = (!self.quick).then(|| {
+            let room = width - self.pad_x() - self.results_w() - RESULTS_GAP;
+            room.max(self.font_px() * 8.)
+        });
+    }
+
+    /// Cuts the document into the lines it is drawn as (see [`Wraps`]).
+    /// Costs nothing when the text, width and text size are unchanged.
+    fn ensure_wraps(&mut self, window: &Window) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.text.hash(&mut hasher);
+        let key = (
+            hasher.finish(),
+            self.wrap_width.map(|w| f32::from(w).to_bits()),
+            self.font_size.to_bits(),
+        );
+        if self.wraps.key == Some(key) {
+            return;
+        }
+        let mut wrapper = self.wrap_width.map(|width| {
+            let font = gpui::font(self.font.clone());
+            (
+                width,
+                window.text_system().line_wrapper(font, self.font_px()),
+            )
+        });
+        let (mut seg_start, mut row_seg) = (Vec::new(), Vec::new());
+        let mut at = 0;
+        for line in self.text.split('\n') {
+            row_seg.push(seg_start.len());
+            seg_start.push(at);
+            if let Some((width, wrapper)) = wrapper.as_mut() {
+                // Most lines are short. No character is wider than the text
+                // size for each byte it takes, so these cannot reach the
+                // edge and need no measuring.
+                if line.len() as f32 * self.font_size > f32::from(*width) {
+                    let fragments = [LineFragment::text(line)];
+                    let mut last = 0;
+                    for boundary in wrapper.wrap_line(&fragments, *width) {
+                        if boundary.ix > last && boundary.ix < line.len() {
+                            seg_start.push(at + boundary.ix);
+                            last = boundary.ix;
+                        }
+                    }
+                }
+            }
+            at += line.len() + 1;
+        }
+        row_seg.push(seg_start.len());
+        self.wraps = Wraps {
+            key: Some(key),
+            seg_start,
+            row_seg,
+        };
+    }
+
+    /// `offset` moved back to the start of the character it falls in.
+    fn snap(&self, offset: usize) -> usize {
+        let mut o = offset.min(self.text.len());
+        while !self.text.is_char_boundary(o) {
+            o -= 1;
+        }
+        o
+    }
+
+    /// The end of segment `seg` as a place for the cursor. Where a line
+    /// wraps, the position after its last character is drawn at the start
+    /// of the next segment, so the cursor stops one character earlier.
+    fn seg_cursor_end(&self, seg: usize) -> usize {
+        let r = self.wraps.seg_range(seg, self.text.len());
+        if self.wraps.wraps_after(seg) && r.end > r.start {
+            self.prev_char(self.snap(r.end))
+        } else {
+            r.end
+        }
+    }
+
+    /// The visual line the cursor is on, for Home and End.
+    fn visual_line(&mut self, window: &Window) -> Range<usize> {
+        self.ensure_wraps(window);
+        let seg = self.wraps.seg_of(self.cursor());
+        self.wraps.seg_start[seg]..self.seg_cursor_end(seg)
     }
 
     fn set_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
@@ -500,51 +711,53 @@ impl Calc {
         cx.notify();
     }
 
-    /// Offset one row up (-1) or down (+1), keeping the horizontal position.
-    fn vertical(&mut self, delta: isize) -> usize {
+    /// Offset one visual line up (-1) or down (+1), keeping the horizontal
+    /// position.
+    fn vertical(&mut self, delta: isize, window: &Window) -> usize {
+        self.ensure_wraps(window);
         let cur = self.cursor();
-        let row = self.row_of(cur);
-        let rows = self.line_starts().len();
-        let target = row as isize + delta;
+        let seg = self.wraps.seg_of(cur);
+        let target = seg as isize + delta;
         if target < 0 {
             return 0;
         }
-        if target as usize >= rows {
+        if target as usize >= self.wraps.segs() {
             return self.text.len();
         }
-        let start = self.line_range(row).start;
+        let target = target as usize;
+        let start = self.wraps.seg_start[seg];
         let x = self.preferred_x.unwrap_or_else(|| {
             self.layouts
-                .get(row)
-                .map(|l| l.x_for_index(cur - start))
+                .get(seg)
+                .map(|l| l.x_for_index(cur.saturating_sub(start)))
                 .unwrap_or_default()
         });
         self.preferred_x = Some(x);
-        let tr = self.line_range(target as usize);
         let col = self
             .layouts
-            .get(target as usize)
+            .get(target)
             .map(|l| l.closest_index_for_x(x))
             .unwrap_or(0);
-        (tr.start + col).min(tr.end)
+        let o = (self.wraps.seg_start[target] + col).min(self.seg_cursor_end(target));
+        self.snap(o)
     }
 
-    fn index_at(&self, pos: Point<Pixels>) -> usize {
+    fn index_at(&mut self, pos: Point<Pixels>, window: &Window) -> usize {
         let Some(b) = self.bounds else { return 0 };
-        let rows = self.line_starts().len();
-        let rel_y = pos.y - b.top() - PAD_Y;
-        let row = if rel_y < px(0.) {
+        self.ensure_wraps(window);
+        let rel_y = pos.y - b.top() - self.pad_y();
+        let seg = if rel_y < px(0.) {
             0
         } else {
-            ((rel_y / self.line_h()) as usize).min(rows - 1)
+            ((rel_y / self.line_h()) as usize).min(self.wraps.segs() - 1)
         };
-        let r = self.line_range(row);
         let col = self
             .layouts
-            .get(row)
-            .map(|l| l.closest_index_for_x(pos.x - b.left() - PAD_X))
+            .get(seg)
+            .map(|l| l.closest_index_for_x(pos.x - b.left() - self.pad_x()))
             .unwrap_or(0);
-        (r.start + col).min(r.end)
+        let o = (self.wraps.seg_start[seg] + col).min(self.seg_cursor_end(seg));
+        self.snap(o)
     }
 
     fn snapshot(&mut self) {
@@ -595,8 +808,22 @@ impl Calc {
         cx.notify();
     }
 
-    fn refresh_rates(&mut self, cx: &mut Context<Self>) {
-        self.set_status("Updating exchange rates…");
+    /// Fetches rates again once they are stale. They are fetched when the
+    /// app starts, but a window can stay open for days. After an attempt
+    /// that failed (no network, say) it waits before the next.
+    fn refresh_stale_rates(&mut self, cx: &mut Context<Self>) {
+        let tried_lately = self.rates_tried.is_some_and(|t| t.elapsed() < RATES_RETRY);
+        if !tried_lately && self.engine.rates_stale() {
+            self.refresh_rates(true, cx);
+        }
+    }
+
+    /// `quiet` leaves the status bar alone (a refresh nobody asked for).
+    fn refresh_rates(&mut self, quiet: bool, cx: &mut Context<Self>) {
+        self.rates_tried = Some(Instant::now());
+        if !quiet {
+            self.set_status("Updating exchange rates…");
+        }
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -610,9 +837,12 @@ impl Calc {
                         }
                         this.engine.set_rates(r);
                         this.outputs = this.engine.evaluate(&this.text);
-                        this.set_status("Exchange rates updated");
+                        if !quiet {
+                            this.set_status("Exchange rates updated");
+                        }
                     }
-                    Err(e) => this.set_status(format!("Exchange rates not updated: {e}")),
+                    Err(e) if !quiet => this.set_status(format!("Exchange rates not updated: {e}")),
+                    Err(_) => {}
                 }
                 cx.notify();
             })
@@ -971,16 +1201,16 @@ impl Calc {
         };
         self.move_to(o, cx);
     }
-    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
         let x = self.preferred_x;
-        let o = self.vertical(-1);
+        let o = self.vertical(-1, window);
         let keep = self.preferred_x.or(x);
         self.move_to(o, cx);
         self.preferred_x = keep;
     }
-    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
         let x = self.preferred_x;
-        let o = self.vertical(1);
+        let o = self.vertical(1, window);
         let keep = self.preferred_x.or(x);
         self.move_to(o, cx);
         self.preferred_x = keep;
@@ -993,12 +1223,12 @@ impl Calc {
         let n = self.next_char(self.cursor());
         self.select_to(n, cx);
     }
-    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.vertical(-1);
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        let o = self.vertical(-1, window);
         self.select_to(o, cx);
     }
-    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.vertical(1);
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        let o = self.vertical(1, window);
         self.select_to(o, cx);
     }
     fn word_left_a(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -1017,20 +1247,25 @@ impl Calc {
         let o = self.word_right(self.cursor());
         self.select_to(o, cx);
     }
-    fn line_start(&mut self, _: &LineStart, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.line_range(self.row_of(self.cursor())).start;
+    fn line_start(&mut self, _: &LineStart, window: &mut Window, cx: &mut Context<Self>) {
+        let o = self.visual_line(window).start;
         self.move_to(o, cx);
     }
-    fn line_end(&mut self, _: &LineEnd, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.line_range(self.row_of(self.cursor())).end;
+    fn line_end(&mut self, _: &LineEnd, window: &mut Window, cx: &mut Context<Self>) {
+        let o = self.visual_line(window).end;
         self.move_to(o, cx);
     }
-    fn select_line_start(&mut self, _: &SelectLineStart, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.line_range(self.row_of(self.cursor())).start;
+    fn select_line_start(
+        &mut self,
+        _: &SelectLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let o = self.visual_line(window).start;
         self.select_to(o, cx);
     }
-    fn select_line_end(&mut self, _: &SelectLineEnd, _: &mut Window, cx: &mut Context<Self>) {
-        let o = self.line_range(self.row_of(self.cursor())).end;
+    fn select_line_end(&mut self, _: &SelectLineEnd, window: &mut Window, cx: &mut Context<Self>) {
+        let o = self.visual_line(window).end;
         self.select_to(o, cx);
     }
     fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
@@ -1252,7 +1487,14 @@ impl Calc {
 
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        let ix = self.index_at(ev.position);
+        // A click on a result copies it.
+        let hit = self.result_hits.iter().find(|h| h.0.contains(&ev.position));
+        let result = hit.and_then(|h| self.outputs.get(h.1)?.text.clone());
+        if let Some(text) = result {
+            self.copy_text(text, cx);
+            return;
+        }
+        let ix = self.index_at(ev.position, window);
         match ev.click_count {
             2 => {
                 let r = self.word_range_at(ix);
@@ -1274,9 +1516,9 @@ impl Calc {
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.selecting = false;
     }
-    fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.selecting {
-            let ix = self.index_at(ev.position);
+            let ix = self.index_at(ev.position, window);
             self.select_to(ix, cx);
         }
     }
@@ -1394,17 +1636,18 @@ impl EntityInputHandler for Calc {
         &mut self,
         range_utf16: Range<usize>,
         bounds: Bounds<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let r = self.range_from_utf16(&range_utf16);
-        let row = self.row_of(r.start);
-        let start = self.line_range(row).start;
-        let layout = self.layouts.get(row)?;
-        let top = bounds.top() + PAD_Y + self.line_h() * row as f32;
-        let x0 = bounds.left() + PAD_X + layout.x_for_index(r.start - start);
-        let x1 =
-            bounds.left() + PAD_X + layout.x_for_index(r.end.min(self.line_range(row).end) - start);
+        self.ensure_wraps(window);
+        let seg = self.wraps.seg_of(r.start);
+        let in_seg = self.wraps.seg_range(seg, self.text.len());
+        let layout = self.layouts.get(seg)?;
+        let left = bounds.left() + self.pad_x();
+        let top = bounds.top() + self.pad_y() + self.line_h() * seg as f32;
+        let x0 = left + layout.x_for_index(r.start.saturating_sub(in_seg.start));
+        let x1 = left + layout.x_for_index(r.end.min(in_seg.end).saturating_sub(in_seg.start));
         Some(Bounds::from_corners(
             point(x0, top),
             point(x1, top + self.line_h()),
@@ -1414,10 +1657,11 @@ impl EntityInputHandler for Calc {
     fn character_index_for_point(
         &mut self,
         p: Point<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.offset_to_utf16(self.index_at(p)))
+        let ix = self.index_at(p, window);
+        Some(self.offset_to_utf16(ix))
     }
 }
 
@@ -1427,29 +1671,30 @@ struct EditorElement {
     calc: Entity<Calc>,
 }
 
-/// The line between the text and the results: one hairline, or two for
-/// themes like Ledger that draw a double rule.
-fn divider(theme: Theme) -> impl IntoElement {
-    let line = || div().w(px(1.)).h_full().bg(theme.divider);
-    div()
-        .flex_none()
-        .flex()
-        .gap(px(2.))
-        .child(line())
-        .when(theme.double_divider, |d| d.child(line()))
-}
-
-/// Paints the results-column tint and the theme's texture behind the
-/// document. Only the visible part is drawn.
-fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement {
+/// Paints the theme's texture behind the document, and for the themes
+/// built around a ruled margin (Ledger, Delft) the double rule before the
+/// results. Only the visible part is drawn.
+fn backdrop(
+    theme: Theme,
+    line_h: Pixels,
+    (pad_x, pad_y): (Pixels, Pixels),
+    results_w: Pixels,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            let results_left = bounds.right() - results_w;
-            window.paint_quad(fill(
-                Bounds::from_corners(point(results_left, bounds.top()), bounds.bottom_right()),
-                theme.results_bg,
-            ));
+            if theme.double_divider {
+                let x = bounds.right() - results_w - RESULTS_GAP / 2.;
+                for x in [x - px(2.), x + px(1.)] {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(x, bounds.top()),
+                            point(x + px(1.), bounds.bottom()),
+                        ),
+                        theme.divider,
+                    ));
+                }
+            }
             let visible = window.content_mask().bounds;
             let (top, bottom) = (
                 visible.top().max(bounds.top()),
@@ -1465,10 +1710,10 @@ fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement
                 Pattern::None => {}
                 Pattern::Ruled => {
                     // A rule under each line of text.
-                    let first = ((top - bounds.top() - PAD_Y) / line_h).floor().max(0.) as usize;
+                    let first = ((top - bounds.top() - pad_y) / line_h).floor().max(0.) as usize;
                     let mut row = first;
                     loop {
-                        let y = bounds.top() + PAD_Y + line_h * (row + 1) as f32 - px(1.);
+                        let y = bounds.top() + pad_y + line_h * (row + 1) as f32 - px(1.);
                         if y > bottom {
                             break;
                         }
@@ -1481,7 +1726,7 @@ fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement
                     // boundaries so each line of text sits in its own band.
                     let step = line_h / 2.;
                     let minor = theme.rule.opacity(0.55);
-                    let origin = bounds.top() + PAD_Y;
+                    let origin = bounds.top() + pad_y;
                     let mut i = ((top - origin) / step).floor() as i64;
                     loop {
                         let y = origin + step * i as f32;
@@ -1493,7 +1738,7 @@ fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement
                         }
                         i += 1;
                     }
-                    let mut x = bounds.left() + PAD_X;
+                    let mut x = bounds.left() + pad_x;
                     let mut k = 0;
                     while x < bounds.right() {
                         window.paint_quad(fill(
@@ -1520,10 +1765,27 @@ fn backdrop(theme: Theme, line_h: Pixels, results_w: Pixels) -> impl IntoElement
     .size_full()
 }
 
+/// A result as it will be drawn: right-aligned on the first visual line
+/// of its row.
+struct ResultMark {
+    text: SharedString,
+    origin: Point<Pixels>,
+    /// For the pointing-hand cursor and the hover tint.
+    hitbox: Hitbox,
+    row: usize,
+}
+
 struct Prepaint {
+    /// The shaped text of each segment (empty for those out of view).
     lines: Vec<ShapedLine>,
     quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
+    results: Vec<ResultMark>,
+    /// Top left of the first line of text.
+    origin: Point<Pixels>,
+    /// The parts of the element text and results may be drawn in.
+    text_clip: Bounds<Pixels>,
+    results_clip: Bounds<Pixels>,
 }
 
 impl IntoElement for EditorElement {
@@ -1534,6 +1796,8 @@ impl IntoElement for EditorElement {
 }
 
 fn runs_for(line: &str, spans: &[(Range<usize>, Hl)], theme: &Theme, font: &Font) -> Vec<TextRun> {
+    let mut font = font.clone();
+    font.weight = theme.text_weight;
     let base = TextRun {
         len: 0,
         font: font.clone(),
@@ -1557,7 +1821,9 @@ fn runs_for(line: &str, spans: &[(Range<usize>, Hl)], theme: &Theme, font: &Font
             });
         }
         let mut f = font.clone();
-        if *hl == Hl::Header {
+        // Headings and the labels that name lines are what the eye looks
+        // for first.
+        if matches!(hl, Hl::Header | Hl::Label) {
             f.weight = FontWeight::BOLD;
         }
         runs.push(TextRun {
@@ -1577,6 +1843,37 @@ fn runs_for(line: &str, spans: &[(Range<usize>, Hl)], theme: &Theme, font: &Font
     runs
 }
 
+/// The part of a line's runs that covers `range` of the line.
+fn slice_runs(runs: &[TextRun], range: Range<usize>) -> Vec<TextRun> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for run in runs {
+        let (start, end) = (pos.max(range.start), (pos + run.len).min(range.end));
+        if end > start {
+            out.push(TextRun {
+                len: end - start,
+                ..run.clone()
+            });
+        }
+        pos += run.len;
+    }
+    out
+}
+
+/// The single run a result is drawn with.
+fn result_run(len: usize, font: &Font, theme: &Theme, color: gpui::Hsla) -> TextRun {
+    let mut font = font.clone();
+    font.weight = theme.result_weight;
+    TextRun {
+        len,
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }
+}
+
 impl Element for EditorElement {
     type RequestLayoutState = ();
     type PrepaintState = Prepaint;
@@ -1594,15 +1891,27 @@ impl Element for EditorElement {
         _: Option<&GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) -> (LayoutId, ()) {
-        let calc = self.calc.read(cx);
-        let rows = calc.text.split('\n').count();
-        let line_h = calc.line_h();
+        // The height depends on the width, because long lines wrap.
+        let calc = self.calc.clone();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (PAD_Y * 2. + line_h * rows as f32).into();
-        (window.request_layout(style, [], cx), ())
+        let id = window.request_measured_layout(style, move |known, available, window, cx| {
+            let width = known.width.or(match available.width {
+                AvailableSpace::Definite(width) => Some(width),
+                _ => None,
+            });
+            calc.update(cx, |calc, _| {
+                if let Some(width) = width {
+                    calc.set_doc_width(width);
+                }
+                calc.ensure_wraps(window);
+                let height = calc.pad_y() * 2. + calc.line_h() * calc.wraps.segs() as f32;
+                size(width.unwrap_or_default(), height)
+            })
+        });
+        (id, ())
     }
 
     fn prepaint(
@@ -1614,112 +1923,169 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Prepaint {
+        self.calc.update(cx, |calc, _| {
+            calc.set_doc_width(bounds.size.width);
+            calc.ensure_wraps(window);
+        });
         let calc = self.calc.read(cx);
         let theme = calc.theme;
         let (line_h, font_size) = (calc.line_h(), calc.font_px());
+        let (pad_x, pad_y) = (calc.pad_x(), calc.pad_y());
         let font = window.text_style().font();
-        let starts = calc.line_starts();
+        let wraps = &calc.wraps;
+        let len = calc.text.len();
         let cursor = calc.cursor();
-        let cur_row = calc.row_of(cursor);
-        let (sel_first, sel_last) = (calc.row_of(calc.sel.start), calc.row_of(calc.sel.end));
-        // Only the lines that can be seen are shaped: those in view (plus a
+        let cur_seg = wraps.seg_of(cursor);
+        let cur_row = wraps.row_of_seg(cur_seg);
+        let sel_first = wraps.row_of_seg(wraps.seg_of(calc.sel.start));
+        let sel_last = wraps.row_of_seg(wraps.seg_of(calc.sel.end));
+
+        // Only the rows that can be seen are shaped: those in view (plus a
         // margin, so a scroll step never reveals an unshaped line) and the
         // ones the cursor and the selection's ends are on, which caret
-        // movement and the input method ask about. Every other row gets an
-        // empty placeholder, so a sheet of thousands of lines costs no more
-        // to draw than a short one.
+        // movement and the input method ask about. Every other segment
+        // keeps an empty placeholder, so a sheet of thousands of lines
+        // costs no more to draw than a short one.
         let view = window.content_mask().bounds;
-        let row_at = |y: Pixels| ((y - bounds.top() - PAD_Y) / line_h).floor() as isize;
-        let (first, last) = (
-            row_at(view.top()) - SHAPE_MARGIN,
-            row_at(view.bottom()) + SHAPE_MARGIN,
-        );
-        let wanted = |row: usize| {
-            (first..=last).contains(&(row as isize))
-                || row.abs_diff(cur_row) <= 1
-                || row == sel_first
-                || row == sel_last
+        let row_at = |y: Pixels, margin: isize| {
+            let seg = ((y - bounds.top() - pad_y) / line_h).floor() as isize + margin;
+            wraps.row_of_seg(seg.clamp(0, wraps.segs() as isize - 1) as usize)
         };
-        let mut lines = Vec::with_capacity(starts.len());
-        for (row, line) in calc.text.split('\n').enumerate() {
-            if !wanted(row) {
-                lines.push(ShapedLine::default());
+        let in_view = row_at(view.top(), -SHAPE_MARGIN)..=row_at(view.bottom(), SHAPE_MARGIN);
+        let mut rows: Vec<usize> = in_view.clone().collect();
+        rows.extend([
+            cur_row.saturating_sub(1),
+            cur_row,
+            (cur_row + 1).min(wraps.rows() - 1),
+            sel_first,
+            sel_last,
+        ]);
+        rows.sort_unstable();
+        rows.dedup();
+
+        let origin = point(bounds.left() + pad_x, bounds.top() + pad_y);
+        let seg_top = |seg: usize| origin.y + line_h * seg as f32;
+        // Results sit against the right edge; text stops a gap before them.
+        let results_clip = Bounds::from_corners(
+            point(bounds.right() - calc.results_w(), bounds.top()),
+            point(bounds.right() - pad_x, bounds.bottom()),
+        );
+        let text_clip = Bounds::from_corners(
+            bounds.origin,
+            point(results_clip.left() - RESULTS_GAP, bounds.bottom()),
+        );
+
+        let mut lines = vec![ShapedLine::default(); wraps.segs()];
+        let mut results = Vec::new();
+        for &row in &rows {
+            let range = wraps.row_range(row, len);
+            let line = &calc.text[range.clone()];
+            let output = calc.outputs.get(row);
+            let spans = output.map(|o| o.spans.as_slice()).unwrap_or(&[]);
+            let runs = runs_for(line, spans, &theme, &font);
+            for seg in wraps.row_segs(row) {
+                let r = wraps.seg_range(seg, len);
+                let part = r.start - range.start..r.end - range.start;
+                lines[seg] = window.text_system().shape_line(
+                    SharedString::from(line[part.clone()].to_string()),
+                    font_size,
+                    &slice_runs(&runs, part),
+                    None,
+                );
+            }
+            let Some(text) = output.and_then(|o| o.text.clone()) else {
+                continue;
+            };
+            if !in_view.contains(&row) {
                 continue;
             }
-            let spans = calc
-                .outputs
-                .get(row)
-                .map(|o| o.spans.as_slice())
-                .unwrap_or(&[]);
-            let runs = runs_for(line, spans, &theme, &font);
-            lines.push(window.text_system().shape_line(
-                SharedString::from(line.to_string()),
-                font_size,
-                &runs,
-                None,
-            ));
+            let text = SharedString::from(text);
+            let run = result_run(text.len(), &font, &theme, theme.result);
+            let width = window
+                .text_system()
+                .shape_line(text.clone(), font_size, &[run], None)
+                .width;
+            let top = seg_top(wraps.row_seg[row]);
+            let left = results_clip.right() - width;
+            let hit = Bounds::from_corners(
+                point(left.max(results_clip.left()), top),
+                point(results_clip.right(), top + line_h),
+            );
+            results.push(ResultMark {
+                text,
+                origin: point(left, top),
+                hitbox: window.insert_hitbox(hit, HitboxBehavior::Normal),
+                row,
+            });
         }
-        let origin_x = bounds.left() + PAD_X;
-        let row_top = |row: usize| bounds.top() + PAD_Y + line_h * row as f32;
+
         let mut quads = Vec::new();
         if calc.sel.is_empty() {
+            // The line the cursor is on is tinted from edge to edge, its
+            // result included, however many visual lines it takes.
+            let segs = wraps.row_segs(cur_row);
             quads.push(fill(
                 Bounds::from_corners(
-                    point(bounds.left(), row_top(cur_row)),
-                    point(bounds.right(), row_top(cur_row) + line_h),
+                    point(bounds.left(), seg_top(segs.start)),
+                    point(bounds.right(), seg_top(segs.end)),
                 ),
                 theme.active_line,
             ));
         } else {
-            let (sr, er) = (sel_first, sel_last);
             // Rows of the selection that are out of view need no highlight.
-            for row in (sr..=er).filter(|row| wanted(*row)) {
-                let ls = starts[row];
-                let line = &lines[row];
-                let line_len = calc.line_range(row).len();
-                let x0 = if row == sr {
-                    line.x_for_index(calc.sel.start - ls)
+            let selected = rows
+                .iter()
+                .filter(|row| (sel_first..=sel_last).contains(row));
+            for seg in selected.flat_map(|row| wraps.row_segs(*row)) {
+                let r = wraps.seg_range(seg, len);
+                if calc.sel.start > r.end || calc.sel.end < r.start {
+                    continue;
+                }
+                let line = &lines[seg];
+                let x0 = line.x_for_index(calc.sel.start.saturating_sub(r.start));
+                let x1 = if calc.sel.end > r.end {
+                    line.x_for_index(r.len()) + px(6.)
                 } else {
-                    px(0.)
-                };
-                let x1 = if row == er {
-                    line.x_for_index(calc.sel.end - ls)
-                } else {
-                    line.x_for_index(line_len) + px(6.)
+                    line.x_for_index(calc.sel.end - r.start)
                 };
                 quads.push(fill(
                     Bounds::from_corners(
-                        point(origin_x + x0, row_top(row)),
-                        point(origin_x + x1, row_top(row) + line_h),
+                        point(origin.x + x0, seg_top(seg)),
+                        point(origin.x + x1, seg_top(seg) + line_h),
                     ),
                     theme.selection,
                 ));
             }
         }
-        let cx_x = lines[cur_row].x_for_index(cursor - starts[cur_row]);
+
+        let in_seg = wraps.seg_range(cur_seg, len);
+        let cx_x = lines[cur_seg].x_for_index(cursor - in_seg.start);
         let cursor_bounds = if theme.block_cursor {
             // As wide as the character under it (or a digit at line end).
             let next = calc.next_char(cursor);
-            let w = if next > cursor && next <= starts[cur_row] + calc.line_range(cur_row).len() {
-                lines[cur_row].x_for_index(next - starts[cur_row]) - cx_x
+            let w = if next > cursor && next <= in_seg.end {
+                lines[cur_seg].x_for_index(next - in_seg.start) - cx_x
             } else {
                 font_size * 0.6
             };
             Bounds::new(
-                point(origin_x + cx_x, row_top(cur_row) + px(4.)),
+                point(origin.x + cx_x, seg_top(cur_seg) + px(4.)),
                 size(w.max(px(2.)), line_h - px(8.)),
             )
         } else {
             Bounds::new(
-                point(origin_x + cx_x, row_top(cur_row) + px(5.)),
+                point(origin.x + cx_x, seg_top(cur_seg) + px(5.)),
                 size(px(2.), line_h - px(10.)),
             )
         };
-        let cursor_quad = fill(cursor_bounds, theme.cursor);
         Prepaint {
             lines,
             quads,
-            cursor: Some(cursor_quad),
+            cursor: Some(fill(cursor_bounds, theme.cursor)),
+            results,
+            origin,
+            text_clip,
+            results_clip,
         }
     }
 
@@ -1735,7 +2101,9 @@ impl Element for EditorElement {
     ) {
         let calc = self.calc.read(cx);
         let focus = calc.focus.clone();
-        let line_h = calc.line_h();
+        let theme = calc.theme;
+        let (line_h, font_size) = (calc.line_h(), calc.font_px());
+        let font = window.text_style().font();
         // While a panel is open, typing must not edit the document.
         if calc.picker.is_none() && calc.settings.is_none() {
             window.handle_input(
@@ -1747,13 +2115,49 @@ impl Element for EditorElement {
         for q in pre.quads.drain(..) {
             window.paint_quad(q);
         }
-        for (row, line) in pre.lines.iter().enumerate() {
-            let origin = point(
-                bounds.left() + PAD_X,
-                bounds.top() + PAD_Y + line_h * row as f32,
-            );
-            line.paint(origin, line_h, window, cx).ok();
-        }
+        let origin = pre.origin;
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: pre.text_clip,
+            }),
+            |window| {
+                for (seg, line) in pre.lines.iter().enumerate().filter(|(_, l)| l.len() > 0) {
+                    let at = point(origin.x, origin.y + line_h * seg as f32);
+                    line.paint(at, line_h, window, cx).ok();
+                }
+            },
+        );
+        // Results: a click copies one, so the pointer becomes a hand over
+        // it and the result dims a little.
+        let hovered = pre.results.iter().position(|r| r.hitbox.is_hovered(window));
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: pre.results_clip,
+            }),
+            |window| {
+                for (i, r) in pre.results.iter().enumerate() {
+                    let color = if hovered == Some(i) {
+                        theme.result.opacity(0.7)
+                    } else {
+                        theme.result
+                    };
+                    let run = result_run(r.text.len(), &font, &theme, color);
+                    let line =
+                        window
+                            .text_system()
+                            .shape_line(r.text.clone(), font_size, &[run], None);
+                    line.paint(r.origin, line_h, window, cx).ok();
+                    window.set_cursor_style(CursorStyle::PointingHand, &r.hitbox);
+                }
+            },
+        );
+        let hitboxes: Vec<Hitbox> = pre.results.iter().map(|r| r.hitbox.clone()).collect();
+        window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
+            let now = hitboxes.iter().position(|h| h.is_hovered(window));
+            if phase == DispatchPhase::Bubble && now != hovered {
+                window.refresh();
+            }
+        });
         let cursor = pre.cursor.take();
         if focus.is_focused(window) {
             if let Some(c) = &cursor {
@@ -1761,17 +2165,23 @@ impl Element for EditorElement {
             }
         }
         let lines = std::mem::take(&mut pre.lines);
+        let hits = pre
+            .results
+            .iter()
+            .map(|r| (r.hitbox.bounds, r.row))
+            .collect();
         let refresh = self.calc.update(cx, |calc, _| {
             calc.layouts = lines;
+            calc.result_hits = hits;
             calc.bounds = Some(bounds);
             if calc.autoscroll == 0 {
                 return false;
             }
             // Keep the cursor line (plus a little margin) inside the viewport.
             let view = calc.scroll.bounds();
-            let row = calc.row_of(calc.cursor());
-            let top = bounds.top() + PAD_Y + calc.line_h() * row as f32;
-            let bottom = top + calc.line_h() + PAD_Y;
+            let seg = calc.wraps.seg_of(calc.cursor());
+            let top = origin.y + calc.line_h() * seg as f32;
+            let bottom = top + calc.line_h() + calc.pad_y();
             let mut off = calc.scroll.offset();
             if top < view.top() {
                 off.y += view.top() - top;
@@ -1834,39 +2244,7 @@ impl Render for Calc {
                 .is_some_and(|(m, _)| m.starts_with("Deleted"));
 
         let (line_h, results_w) = (self.line_h(), self.results_w());
-        let rows = self.text.split('\n').count();
-        let cur_row = self.row_of(self.cursor());
-        // Only the result rows in view (plus a margin) become elements; the
-        // rest are stood in for by a spacer above and one below.
-        let scrolled = -self.scroll.offset().y;
-        let row_at = |y: Pixels| ((y - PAD_Y) / line_h).floor() as isize;
-        let first_row = (row_at(scrolled) - SHAPE_MARGIN).clamp(0, rows as isize) as usize;
-        let last_row = (row_at(scrolled + window.viewport_size().height) + SHAPE_MARGIN + 1)
-            .clamp(first_row as isize, rows as isize) as usize;
-        let results = (first_row..last_row).map(|i| {
-            let text = self.outputs.get(i).and_then(|o| o.text.clone());
-            let active = i == cur_row && self.sel.is_empty();
-            div()
-                .id(("result", i))
-                .h(line_h)
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_end()
-                .overflow_hidden()
-                .when(active, |d| d.bg(theme.active_line))
-                .text_color(theme.result)
-                .font_weight(theme.result_weight)
-                .when_some(text, |d, t| {
-                    let copy = t.clone();
-                    d.cursor_pointer()
-                        .hover(|s| s.opacity(0.7))
-                        .child(t)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.copy_text(copy.clone(), cx)
-                        }))
-                })
-        });
+        let pads = (self.pad_x(), self.pad_y());
         let status = self
             .status
             .as_ref()
@@ -1994,7 +2372,7 @@ impl Render for Calc {
                                     .flex_grow()
                                     .flex_shrink_0()
                                     .cursor(CursorStyle::IBeam)
-                                    .child(backdrop(theme, line_h, results_w))
+                                    .child(backdrop(theme, line_h, pads, results_w))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(Self::on_mouse_down),
@@ -2005,25 +2383,13 @@ impl Render for Calc {
                                         cx.listener(Self::on_mouse_up),
                                     )
                                     .on_mouse_move(cx.listener(Self::on_mouse_move))
+                                    // One surface: the element draws the
+                                    // text and, at the right, its results.
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
-                                            .overflow_hidden()
                                             .child(EditorElement { calc: cx.entity() }),
-                                    )
-                                    .child(divider(theme))
-                                    .child(
-                                        div()
-                                            .w(results_w)
-                                            .flex_none()
-                                            .pt(PAD_Y)
-                                            .pr(PAD_X)
-                                            .pl(px(12.))
-                                            .cursor(CursorStyle::Arrow)
-                                            .child(div().h(line_h * first_row as f32))
-                                            .children(results)
-                                            .child(div().h(line_h * (rows - last_row) as f32)),
                                     ),
                             ),
                     ),
@@ -2033,7 +2399,7 @@ impl Render for Calc {
                     div()
                         .h(px(26.))
                         .flex_none()
-                        .px(PAD_X)
+                        .px(BAR_PAD_X)
                         .flex()
                         .items_center()
                         .justify_between()
@@ -2078,5 +2444,70 @@ impl Render for Calc {
             })
             .children(picker)
             .children(settings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// "ab cd ef\nxy\n" with the first line wrapped before "cd" and "ef":
+    /// segments "ab ", "cd ", "ef", then "xy", then the empty last line.
+    fn wraps() -> (Wraps, usize) {
+        let text = "ab cd ef\nxy\n";
+        let w = Wraps {
+            key: None,
+            seg_start: vec![0, 3, 6, 9, 12],
+            row_seg: vec![0, 3, 4, 5],
+        };
+        (w, text.len())
+    }
+
+    #[test]
+    fn segments_and_rows() {
+        let (w, len) = wraps();
+        assert_eq!((w.segs(), w.rows()), (5, 3));
+        // A segment ends where the next one starts, or before the line break.
+        let ranges: Vec<_> = (0..5).map(|seg| w.seg_range(seg, len)).collect();
+        assert_eq!(ranges, [0..3, 3..6, 6..8, 9..11, 12..12]);
+        assert_eq!(w.row_range(0, len), 0..8);
+        assert_eq!(w.row_range(1, len), 9..11);
+        assert_eq!(w.row_range(2, len), 12..12);
+        assert_eq!(w.row_segs(0), 0..3);
+        let rows: Vec<_> = (0..5).map(|seg| w.row_of_seg(seg)).collect();
+        assert_eq!(rows, [0, 0, 0, 1, 2]);
+        let wrapped: Vec<_> = (0..5).map(|seg| w.wraps_after(seg)).collect();
+        assert_eq!(wrapped, [true, true, false, false, false]);
+    }
+
+    #[test]
+    fn offsets_map_to_segments() {
+        let (w, len) = wraps();
+        // Where a line wraps, the offset belongs to the segment it starts.
+        let segs: Vec<_> = (0..=len).map(|o| w.seg_of(o)).collect();
+        assert_eq!(segs, [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn runs_are_cut_to_a_segment() {
+        let run = |len: usize| TextRun {
+            len,
+            font: gpui::font("Menlo"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let lens = |range| -> Vec<usize> {
+            slice_runs(&[run(4), run(3), run(5)], range)
+                .iter()
+                .map(|r| r.len)
+                .collect()
+        };
+        assert_eq!(lens(0..12), [4, 3, 5]);
+        assert_eq!(lens(2..6), [2, 2]);
+        assert_eq!(lens(4..7), [3]);
+        assert_eq!(lens(8..12), [4]);
+        assert_eq!(lens(5..5), [0usize; 0]);
     }
 }
