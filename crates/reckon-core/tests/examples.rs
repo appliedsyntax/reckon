@@ -257,6 +257,91 @@ fn straight_line_fits() {
     check(&cases);
 }
 
+#[test]
+fn method_comparison() {
+    // Thirty pairs with one outlier; the expected values are from R (see
+    // the tests in stats.rs).
+    let data = "\
+ref = [398.8, 183.6, 88.2, 74, 140.9, 332, 173.2, 397.8, 99.7, 218.6, 111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9, 270.6, 159, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7]
+new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167, 290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223, 395.7, 168]
+";
+    let mass = "a = [1 kg, 2 kg, 3 kg, 4 kg]\nb = [1100 g, 2050 g, 3200 g, 3900 g]\n";
+    let trip = "hours = [1 h, 2 h, 3 h]\nkm = [50 km, 100 km, 160 km]\n";
+    let with = |lines: &str, last: &str| format!("{lines}{last}");
+    let no = |e: &str| format!("<no result: Some({e:?})>");
+    let cases = [
+        (with(data, "slope_ci(ref, new)"), "[0.986, 1.0576]".to_string()),
+        (with(data, "intercept_ci(ref, new)"), "[-3.6557, 14.1719]".into()),
+        (with(data, "pb_slope(ref, new)"), "1.0262".into()),
+        (with(data, "pb_intercept(ref, new)"), "0.7102".into()),
+        (with(data, "pb_slope_ci(ref, new)"), "[0.9994, 1.0602]".into()),
+        (with(data, "pb_intercept_ci(ref, new)"), "[-5.5717, 6.5421]".into()),
+        (with(data, "deming_slope(ref, new)"), "1.0261".into()),
+        (with(data, "deming_slope(ref, new, 1)"), "1.0261".into()),
+        (with(data, "deming_slope(ref, new, 0.25)"), "1.0236".into()),
+        (with(data, "deming_intercept(ref, new)"), "4.3177".into()),
+        (with(data, "deming_slope_ci(ref, new)"), "[0.9973, 1.0549]".into()),
+        (with(data, "deming_intercept_ci(ref, new)"), "[-4.2115, 12.8468]".into()),
+        // Each line on its own and all four together give the same numbers.
+        (
+            with(data, "pb_slope(ref, new)\npb_slope_ci(ref, new)\npb_intercept(ref, new)"),
+            "0.7102".into(),
+        ),
+        // y is put in x's unit; the slope has none.
+        (with(mass, "pb_slope(a, b)"), "0.9417".into()),
+        (with(mass, "pb_intercept(a, b)"), "0.1625 kg".into()),
+        (with(mass, "deming_intercept_ci(a, b)"), "[-0.4864 kg, 0.818 kg]".into()),
+        // The least-squares slope keeps its units, so its interval does too.
+        (with(trip, "slope_ci(hours, km)"), "[18.3203 km/h, 91.6797 km/h]".into()),
+        (with(trip, "pb_slope(hours, km)"), no("both lists need the same kind of unit")),
+        (
+            with("", "pb_slope([1, 2, 3, 4], [8, 6, 4, 2])"),
+            no("Passing-Bablok needs x and y that rise together"),
+        ),
+        (
+            with("", "pb_slope_ci([1, 2, 3], [3, 4, 7])"),
+            no("pb_slope_ci needs more points for a confidence interval"),
+        ),
+        (
+            with("", "deming_slope_ci([1, 2], [3, 4])"),
+            no("deming_slope_ci needs at least three points"),
+        ),
+        (
+            with("", "slope_ci([1, 2], [3, 4])"),
+            no("slope_ci needs at least three points"),
+        ),
+        (
+            with("", "deming_slope([1, 2, 3], [5, 5, 5])"),
+            no("there is no line when x and y do not vary together"),
+        ),
+        (
+            with("", "deming_slope([1, 2, 3], [2, 4, 7], 0)"),
+            no("the error ratio must be a positive number"),
+        ),
+        (
+            with("", "deming_slope([1, 2, 3])"),
+            no("deming_slope needs two lists, and an error ratio if it is not 1: deming_slope(x, y)"),
+        ),
+        (
+            with("", "pb_slope([1, 2, 3], [2, 4, 7], 1)"),
+            no("pb_slope needs two lists: pb_slope(x, y)"),
+        ),
+        (
+            with("", "pb_slope([1, 2, 3], [1, 2])"),
+            no("the two lists must hold the same number of values"),
+        ),
+        (
+            with("", "pb_slope([10%, 20%], [1, 2])"),
+            no("cannot mix percentages and numbers"),
+        ),
+    ];
+    let cases: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    check(&cases);
+}
+
 /// The sample sheets that come with the app show features, so every line
 /// that is not a heading or a note has to give a result.
 #[test]

@@ -6,7 +6,8 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 
 ## Decisions already made
 
-- **Scope.** The calculator gets the statistics most people use: lists, descriptive statistics and a straight-line fit. The laboratory methods further down are parked. If they are built, they go in the command-line tool only, not the apps.
+- **Scope.** The calculator gets the statistics most people use: lists, descriptive statistics and a straight-line fit. Method comparison (Passing-Bablok and Deming) was asked for again, since the three fits are read side by side, so it is in the apps too: the functions work like `slope`. The other laboratory methods stay parked.
+- **Deming error ratio.** The third argument is x's error variance over y's, as in CLSI EP09 and the R package mcr. Default 1.
 - **No AI inside the app.** An AI assistant or a script uses these features through the `reckon` command-line tool.
 - **No Python, numpy or scipy.** The engine is Rust with no dependencies and also runs on iOS and Android, so Python cannot be bundled. Each method is written in the engine.
 - **How data is entered.** A list in square brackets, kept in a variable: `x = [1, 2, 3]`. Single-list functions also work on the lines above, the way `sum` does.
@@ -20,18 +21,31 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Validation of the linear fit against NIST reference data.** The Norris data set and three numerical-accuracy data sets run as automated tests.
 - [x] **Sample sheet for the new features.** "Lists and statistics" is added to the sheets list once, on a new installation or the first start after the update.
 
+## Done on the method-comparison branch (not yet released)
+
+- [x] **Confidence intervals for the line fit.** `slope_ci` and `intercept_ci`, 95%, Student's t; checked against the certified standard deviations of NIST Norris.
+- [x] **Passing-Bablok regression.** `pb_slope`, `pb_intercept` and their `_ci` intervals, up to 1,000 points.
+- [x] **Deming regression.** `deming_slope`, `deming_intercept` and their `_ci` intervals (jackknife), with an optional error ratio.
+- [x] **Validation.** All three against values computed in R by independent code (R's `lm`, Deming as the major axis of rescaled data, Passing-Bablok written from the 1983 paper).
+- [x] **Importing data.** File › Import Data reads CSV, tab-separated and Excel `.xlsx`; cells pasted from a spreadsheet become lists; Paste as Lists for a single column. The command line loads a file with `-d` and prints its lines with `--import`.
+- [x] **Long lists on one line.** Plain numbers in a list no longer count toward the 400-item line limit, so a line holds up to 10,000 values.
+- [x] **Sample sheet "Method comparison".** The three fits side by side on thirty samples.
+
 ## Next, if wanted
 
+- [ ] **Check against mcr.** Compare Passing-Bablok and Deming with the R package mcr, the usual reference in clinical chemistry, on its example data. (S)
+- [ ] **Bias at a decision level.** The difference between the methods at a chosen x, with its interval, for each fit. (S)
+- [ ] **Import on the phones.** The engine can already read the files; the apps need a file picker. (M)
+
 - [ ] **More descriptive statistics.** Quantiles, smallest and largest value. `min` is already the unit "minutes", so these need other names. (S)
-- [ ] **Standard errors and confidence intervals for the line fit.** For slope and intercept. (S)
 - [ ] **Quadratic and cubic regression.** Polynomial fits of degree 2 and 3, validated against the NIST polynomial data sets. Needs a way to show three or four coefficients from one line. (M)
 - [ ] **Arithmetic on lists.** `weights * 2`, `weights in lb`. Today a list can only be passed to a function. (S)
-- [ ] **Data in and results out on the command line.** Read a CSV file or standard input and print results as JSON, so scripts and AI assistants can run every method without the app. (M)
+- [ ] **Results out as JSON on the command line.** Data already goes in with `-d`; printing results as JSON would let scripts read every method's output. (S)
 
-## Parked: laboratory methods (command-line tool only)
+## Parked: laboratory methods
 
-- [ ] **Deming regression.** A line fit that allows measurement error in both methods, given the ratio of their error variances; confidence intervals by jackknife. (M)
-- [ ] **Passing-Bablok regression.** A fit based on the median of pairwise slopes that resists outliers, with confidence intervals for slope and intercept. (M)
+- [ ] **Weighted Deming.** For measurement error that grows with the value. Iterative and harder to validate. (M)
+- [ ] **Linearity test for Passing-Bablok.** The cusum test from the original paper. (S)
 - [ ] **Bland-Altman analysis.** Mean difference (bias) and limits of agreement between two methods, with their confidence intervals. (S)
 - [ ] **Confusion matrix measures.** From true and predicted labels: sensitivity, specificity, F1, positive and negative percent agreement (PPA, NPA) and overall agreement. Cohen's kappa is a likely addition but was not asked for. (S)
 - [ ] **Logistic regression.** Fit a yes/no outcome against one or more inputs, then report the confusion matrix measures at a chosen cut-off. (L)

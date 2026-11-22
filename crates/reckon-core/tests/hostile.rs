@@ -176,6 +176,74 @@ fn lists_stop_growing_at_their_limits() {
 }
 
 #[test]
+fn a_column_of_data_fits_on_one_line_and_stays_cheap() {
+    // Ten thousand measurements, as an import writes them, are one line.
+    let list = (0..10_000)
+        .map(|i| format!("-{i}.25"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let started = Instant::now();
+    assert_eq!(
+        last_result(format!("a = [{list}]\ncount(a)")).as_deref(),
+        Some("10,000")
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // Only plain numbers come free: as many terms that multiply, add or
+    // sit in parentheses are still too long, since they nest when evaluated.
+    for sep in [" ", " + ", " * "] {
+        assert_eq!(
+            last_result(format!("[{}]", vec!["1"; 2_000].join(sep))),
+            None
+        );
+    }
+    assert_eq!(
+        last_result(format!("[{}]", vec!["(1)"; 2_000].join(", "))),
+        None
+    );
+    assert_eq!(
+        last_result(format!("[{}]", vec!["--1"; 2_000].join(", "))),
+        None
+    );
+}
+
+#[test]
+fn passing_bablok_stays_within_its_limits() {
+    let list = |n: usize, k: f64| {
+        let v: Vec<String> = (0..n)
+            .map(|i| format!("{}", i as f64 * k + (i % 7) as f64))
+            .collect();
+        format!("[{}]", v.join(", "))
+    };
+    // A thousand points is the most; four lines about the same two lists
+    // cost one fit.
+    let data = format!("x = {}\ny = {}\n", list(1_000, 1.0), list(1_000, 1.1));
+    let sheet = format!(
+        "{data}pb_slope(x, y)\npb_intercept(x, y)\npb_slope_ci(x, y)\npb_intercept_ci(x, y)"
+    );
+    let started = Instant::now();
+    assert!(last_result(sheet).is_some());
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    let sheet = format!(
+        "x = {}\ny = {}\npb_slope(x, y)",
+        list(1_001, 1.0),
+        list(1_001, 1.1)
+    );
+    let out = on_small_stack(move || engine().evaluate(&sheet).pop().unwrap().error);
+    assert_eq!(out.as_deref(), Some("pb_slope works on up to 1,000 points"));
+
+    // A function cannot fit large lists over and over.
+    let sheet = format!("{data}f(x, y)");
+    let result = on_small_stack(move || {
+        let mut e = engine();
+        let f = "fn f(a, b) = pb_slope(a, b) + pb_slope(b, a) + pb_slope(a, b)";
+        e.load_plugin("pb", f).unwrap();
+        e.evaluate(&sheet).pop().unwrap()
+    });
+    assert_eq!(result.error.as_deref(), Some("too many function calls"));
+}
+
+#[test]
 fn statistics_in_functions_stop_at_the_call_budget() {
     // Each call sorts 8,192 numbers; without a budget the 2^20 calls here
     // would take hours.

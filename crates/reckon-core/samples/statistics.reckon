@@ -1,5 +1,5 @@
 # Lists and statistics
-// New in this version. Values in square brackets make a list.
+// Values in square brackets make a list.
 // Delete this sheet whenever you like; it will not come back.
 
 weights = [3 kg, 500 g, 2 kg]

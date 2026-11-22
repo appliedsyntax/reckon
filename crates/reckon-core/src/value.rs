@@ -239,7 +239,8 @@ fn format_list(l: &List, ucx: &UnitCtx, s: &Settings) -> String {
             .map(|x| format_value(&l.value(*x), ucx, &plain))
             .collect();
     let full = format!("[{}]", shown.join(sep));
-    if shown.len() == l.v.len() && width(&full) <= LIST_WIDTH {
+    // A pair, such as a confidence interval, is always shown whole.
+    if shown.len() == l.v.len() && (width(&full) <= LIST_WIDTH || l.v.len() <= 2) {
         return full;
     }
     let count = format!("… {} values]", l.v.len());

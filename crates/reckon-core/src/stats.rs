@@ -28,7 +28,9 @@ pub fn variance(v: &[f64], sample: bool) -> f64 {
 }
 
 /// Sums behind a least-squares line through points (x, y).
+#[derive(Clone, Copy, Debug)]
 pub struct Fit {
+    n: f64,
     mean_x: f64,
     mean_y: f64,
     sxx: f64,
@@ -48,12 +50,49 @@ impl Fit {
             sxy += dx * dy;
         }
         Fit {
+            n: x.len() as f64,
             mean_x,
             mean_y,
             sxx,
             syy,
             sxy,
         }
+    }
+
+    /// The same sums with point (x, y) taken out. Exact algebra on the
+    /// centred sums, so leaving each point out in turn costs O(n) in all.
+    fn without(&self, x: f64, y: f64) -> Fit {
+        let n = self.n;
+        let (dx, dy) = (x - self.mean_x, y - self.mean_y);
+        let k = n / (n - 1.0);
+        Fit {
+            n: n - 1.0,
+            mean_x: (n * self.mean_x - x) / (n - 1.0),
+            mean_y: (n * self.mean_y - y) / (n - 1.0),
+            sxx: self.sxx - k * dx * dx,
+            syy: self.syy - k * dy * dy,
+            sxy: self.sxy - k * dx * dy,
+        }
+    }
+
+    /// 95% confidence intervals for the least-squares slope and intercept,
+    /// from the residual scatter and Student's t with n − 2 degrees of
+    /// freedom. Needs at least three points that do not all share one x.
+    pub fn intervals(&self) -> Option<Interval2> {
+        let b = self.slope()?;
+        let a = self.intercept()?;
+        if self.n < 3.0 {
+            return None;
+        }
+        let sse = (self.syy - self.sxy * self.sxy / self.sxx).max(0.0);
+        let s2 = sse / (self.n - 2.0);
+        let se_b = (s2 / self.sxx).sqrt();
+        let se_a = (s2 * (1.0 / self.n + self.mean_x * self.mean_x / self.sxx)).sqrt();
+        let t = t_quantile(0.975, self.n - 2.0);
+        Some(Interval2 {
+            slope: (b - t * se_b, b + t * se_b),
+            intercept: (a - t * se_a, a + t * se_a),
+        })
     }
 
     /// Change in y per unit of x. `None` when every x is the same.
@@ -71,6 +110,294 @@ impl Fit {
         (self.sxx > 0.0 && self.syy > 0.0)
             .then(|| (self.sxy / (self.sxx.sqrt() * self.syy.sqrt())).clamp(-1.0, 1.0))
     }
+}
+
+/// Lower and upper 95% limits for a slope and an intercept.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Interval2 {
+    pub slope: (f64, f64),
+    pub intercept: (f64, f64),
+}
+
+/// A fitted line with 95% confidence intervals, when there are enough
+/// points to give them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line {
+    pub slope: f64,
+    pub intercept: f64,
+    pub ci: Option<Interval2>,
+}
+
+// ------------------------------------------------------------ Deming
+
+/// Deming slope through the centred sums. `ratio` is the variance of the
+/// measurement error in x divided by that in y (the convention of CLSI
+/// EP09 and the R package mcr). `None` when x and y do not vary together.
+fn deming_slope(f: &Fit, ratio: f64) -> Option<f64> {
+    if f.sxy == 0.0 || !(f.sxx > 0.0 || f.syy > 0.0) {
+        return None;
+    }
+    // In terms of d = σ²(y error) / σ²(x error) = 1 / ratio:
+    // b = (u + √(u² + 4·d·sxy²)) / (2·sxy) with u = syy − d·sxx. The second
+    // form is the same number without cancellation when u < 0.
+    let d = 1.0 / ratio;
+    let u = f.syy - d * f.sxx;
+    let r = (u * u + 4.0 * d * f.sxy * f.sxy).sqrt();
+    let b = if u >= 0.0 {
+        (u + r) / (2.0 * f.sxy)
+    } else {
+        2.0 * d * f.sxy / (r - u)
+    };
+    b.is_finite().then_some(b)
+}
+
+/// Deming regression: a straight line that allows for measurement error in
+/// both x and y. Confidence intervals come from the jackknife (leaving
+/// each point out in turn), as Linnet (1990) describes, with Student's t on
+/// n − 2 degrees of freedom; they need at least three points.
+pub fn deming(x: &[f64], y: &[f64], ratio: f64) -> Option<Line> {
+    let f = Fit::new(x, y);
+    let b = deming_slope(&f, ratio)?;
+    let a = f.mean_y - b * f.mean_x;
+    let ci = deming_intervals(&f, x, y, ratio, b, a);
+    Some(Line {
+        slope: b,
+        intercept: a,
+        ci,
+    })
+}
+
+fn deming_intervals(
+    f: &Fit,
+    x: &[f64],
+    y: &[f64],
+    ratio: f64,
+    b: f64,
+    a: f64,
+) -> Option<Interval2> {
+    let n = x.len();
+    if n < 3 {
+        return None;
+    }
+    let mut bs = Vec::with_capacity(n);
+    let mut is = Vec::with_capacity(n);
+    for (xi, yi) in x.iter().zip(y) {
+        let g = f.without(*xi, *yi);
+        let bi = deming_slope(&g, ratio)?;
+        bs.push(bi);
+        is.push(g.mean_y - bi * g.mean_x);
+    }
+    let t = t_quantile(0.975, n as f64 - 2.0);
+    // Jackknife standard error: √((n − 1)/n · Σ(θ₋ᵢ − mean θ₋ᵢ)²).
+    let se = |v: &[f64]| {
+        let m = mean(v);
+        let ss: f64 = v.iter().map(|e| (e - m) * (e - m)).sum();
+        ((n as f64 - 1.0) / n as f64 * ss).sqrt()
+    };
+    let (se_b, se_a) = (se(&bs), se(&is));
+    Some(Interval2 {
+        slope: (b - t * se_b, b + t * se_b),
+        intercept: (a - t * se_a, a + t * se_a),
+    })
+}
+
+// -------------------------------------------------- Passing-Bablok
+
+/// Most points Passing-Bablok takes. It looks at every pair of points, so
+/// the work grows with the square: 1,000 points are half a million slopes.
+pub const PB_MAX_POINTS: usize = 1_000;
+
+/// Why Passing-Bablok gave no line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PbError {
+    TooFewPoints,
+    /// Most pairs of points slope downwards: the method assumes the two
+    /// measurements rise together.
+    Negative,
+}
+
+/// Passing-Bablok regression (Passing and Bablok, 1983): the slope is a
+/// shifted median of the slopes between every pair of points, so a few
+/// outliers barely move it and no assumption is made about the errors.
+/// The 95% intervals need about eight points or more.
+pub fn passing_bablok(x: &[f64], y: &[f64]) -> Result<Line, PbError> {
+    let n = x.len();
+    // Sorting by x (then y) makes pairs with the same x vertical upwards,
+    // so they count as +∞ whatever order the data came in.
+    let mut pts: Vec<(f64, f64)> = x.iter().copied().zip(y.iter().copied()).collect();
+    pts.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.total_cmp(&q.1)));
+    let mut s = Vec::with_capacity(n * n.saturating_sub(1) / 2);
+    for (i, p) in pts.iter().enumerate() {
+        for q in &pts[i + 1..] {
+            let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            let v = if dx == 0.0 { f64::INFINITY } else { dy / dx };
+            // A slope of exactly −1 says nothing about the line, since the
+            // method treats x and y alike.
+            if v != -1.0 {
+                s.push(v);
+            }
+        }
+    }
+    let big_n = s.len();
+    if big_n == 0 {
+        return Err(PbError::TooFewPoints);
+    }
+    // Shift by the number of slopes below −1 so that the estimate does not
+    // depend on which method is called x.
+    let k = s.iter().filter(|v| **v < -1.0).count();
+    // The m-th smallest slope, counting from 1, shifted by k.
+    let mut nth = |m: usize| -> Option<f64> {
+        let i = (m + k).checked_sub(1)?;
+        (i < big_n).then(|| *s.select_nth_unstable_by(i, f64::total_cmp).1)
+    };
+    let b = if big_n % 2 == 1 {
+        nth(big_n.div_ceil(2))
+    } else {
+        nth(big_n / 2)
+            .zip(nth(big_n / 2 + 1))
+            .map(|(l, h)| (l + h) / 2.0)
+    }
+    .filter(|b| b.is_finite() && *b > 0.0)
+    .ok_or(PbError::Negative)?;
+    // Rank limits for the 95% interval of the slope.
+    let nf = n as f64;
+    let c = Z95 * (nf * (nf - 1.0) * (2.0 * nf + 5.0) / 18.0).sqrt();
+    let m1 = ((big_n as f64 - c) / 2.0).round();
+    let ci = if m1 >= 1.0 {
+        let m1 = m1 as usize;
+        let m2 = big_n - m1 + 1;
+        match (nth(m1), nth(m2)) {
+            (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() => Some((lo, hi)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let icpt = |slope: f64| median(&pts.iter().map(|p| p.1 - slope * p.0).collect::<Vec<_>>());
+    Ok(Line {
+        slope: b,
+        intercept: icpt(b),
+        ci: ci.map(|(lo, hi)| Interval2 {
+            slope: (lo, hi),
+            intercept: (icpt(hi), icpt(lo)),
+        }),
+    })
+}
+
+// ------------------------------------------------------ distributions
+
+/// The normal quantile for a two-sided 95% interval.
+pub const Z95: f64 = 1.959_963_984_540_054;
+
+/// The value t below which a fraction `p` of Student's t distribution with
+/// `df` degrees of freedom lies, for p in (0.5, 1).
+pub fn t_quantile(p: f64, df: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0, 1.0);
+    while t_cdf(hi, df) < p && hi < 1e12 {
+        lo = hi;
+        hi *= 2.0;
+    }
+    for _ in 0..200 {
+        let mid = (lo + hi) / 2.0;
+        if mid == lo || mid == hi {
+            break;
+        }
+        if t_cdf(mid, df) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// P(T ≤ t) for t ≥ 0.
+fn t_cdf(t: f64, df: f64) -> f64 {
+    1.0 - 0.5 * beta_inc(df / 2.0, 0.5, df / (df + t * t))
+}
+
+/// Regularised incomplete beta function I_x(a, b), by the continued
+/// fraction in Numerical Recipes (modified Lentz).
+fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let ln_front = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
+    if x > (a + 1.0) / (a + b + 2.0) {
+        return 1.0 - beta_inc(b, a, 1.0 - x);
+    }
+    const TINY: f64 = 1e-300;
+    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..300 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-16 {
+            break;
+        }
+    }
+    ln_front.exp() * h / a
+}
+
+/// ln Γ(x) for x > 0 (Lanczos approximation, g = 7, about 15 digits).
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        // Reflection: Γ(x)Γ(1 − x) = π / sin(πx).
+        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let t = x + 7.5;
+    let s = G[1..]
+        .iter()
+        .enumerate()
+        .fold(G[0], |s, (i, g)| s + g / (x + i as f64 + 1.0));
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + s.ln()
 }
 
 #[cfg(test)]
@@ -153,5 +480,186 @@ mod tests {
         close(f.slope().unwrap(), 1.00211681802045, 12);
         close(f.intercept().unwrap(), -0.262323073774029, 10);
         close(f.correlation().unwrap().powi(2), 0.999993745883712, 12);
+        // Certified standard deviations of the estimates, which give the
+        // 95% intervals with t(0.975, 34).
+        let ci = f.intervals().unwrap();
+        let t = t_quantile(0.975, 34.0);
+        close(
+            (ci.slope.1 - ci.slope.0) / (2.0 * t),
+            0.429796848199937e-3,
+            10,
+        );
+        close(
+            (ci.intercept.1 - ci.intercept.0) / (2.0 * t),
+            0.232818234301152,
+            10,
+        );
+    }
+
+    /// Reference values computed in R 4.6 by independent code: `qt`, `lm`
+    /// with `confint`, Deming as the major axis of rescaled data with the
+    /// jackknife written out, and Passing-Bablok written from the paper.
+    /// Thirty points with one outlier (12) and a tie in x (5 and 20).
+    #[rustfmt::skip]
+    const X: [f64; 30] = [
+        398.8, 183.6, 88.2, 74.0, 140.9, 332.0, 173.2, 397.8, 99.7, 218.6,
+        111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9,
+        270.6, 159.0, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7,
+    ];
+    #[rustfmt::skip]
+    const Y: [f64; 30] = [
+        405.6, 204.4, 95.3, 74.8, 144.8, 335.0, 172.7, 405.5, 123.0, 222.2,
+        115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167.0,
+        290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223.0, 395.7, 168.0,
+    ];
+
+    fn same_line(got: Line, want: [f64; 6], digits: i32) {
+        let ci = got.ci.unwrap();
+        let got = [
+            got.slope,
+            got.intercept,
+            ci.slope.0,
+            ci.slope.1,
+            ci.intercept.0,
+            ci.intercept.1,
+        ];
+        for (g, w) in got.iter().zip(want) {
+            close(*g, w, digits);
+        }
+    }
+
+    #[test]
+    fn t_quantiles() {
+        let want = [
+            (1.0, 12.7062047361747),
+            (2.0, 4.30265272974946),
+            (5.0, 2.57058183563631),
+            (10.0, 2.22813885198627),
+            (28.0, 2.04840714179524),
+            (30.0, 2.04227245630124),
+            (100.0, 1.98397151852355),
+            (1000.0, 1.96233908082641),
+        ];
+        for (df, t) in want {
+            close(t_quantile(0.975, df), t, 12);
+        }
+    }
+
+    #[test]
+    fn least_squares_intervals() {
+        let f = Fit::new(&X, &Y);
+        let ci = f.intervals().unwrap();
+        let line = Line {
+            slope: f.slope().unwrap(),
+            intercept: f.intercept().unwrap(),
+            ci: Some(ci),
+        };
+        same_line(
+            line,
+            [
+                1.02181651049259,
+                5.25808805694664,
+                0.98601411241609,
+                1.05761890856909,
+                -3.65571027940811,
+                14.1718863933014,
+            ],
+            12,
+        );
+        assert!(Fit::new(&[1.0, 2.0], &[1.0, 3.0]).intervals().is_none());
+    }
+
+    #[test]
+    fn deming_against_reference() {
+        let want1 = [
+            1.0261010744375,
+            4.31765483479907,
+            0.997284379935127,
+            1.05491776893987,
+            -4.21152850742233,
+            12.8468381770205,
+        ];
+        same_line(deming(&X, &Y, 1.0).unwrap(), want1, 11);
+        let want = [
+            1.0235516019089,
+            4.87724705834276,
+            0.99362754522936,
+            1.05347565858844,
+            -3.98370409908105,
+            13.7381982157666,
+        ];
+        same_line(deming(&X, &Y, 0.25).unwrap(), want, 11);
+    }
+
+    #[test]
+    fn deming_properties() {
+        // Points on a line give that line, whatever the ratio.
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let y: Vec<f64> = x.iter().map(|v| 2.0 * v + 3.0).collect();
+        for ratio in [0.01, 1.0, 100.0] {
+            let l = deming(&x, &y, ratio).unwrap();
+            close(l.slope, 2.0, 13);
+            close(l.intercept, 3.0, 12);
+        }
+        // Swapping the axes inverts the slope (and the ratio).
+        let l = deming(&X, &Y, 0.25).unwrap();
+        let m = deming(&Y, &X, 4.0).unwrap();
+        close(l.slope * m.slope, 1.0, 13);
+        // With no error in x it becomes least squares of y on x.
+        let ols = Fit::new(&X, &Y).slope().unwrap();
+        close(deming(&X, &Y, 1e-9).unwrap().slope, ols, 7);
+        // No covariance, no line; two points, no interval.
+        assert!(deming(&[1.0, 2.0, 3.0], &[5.0, 5.0, 5.0], 1.0).is_none());
+        assert!(deming(&[1.0, 2.0], &[1.0, 3.0], 1.0).unwrap().ci.is_none());
+    }
+
+    #[test]
+    fn passing_bablok_against_reference() {
+        let want = [
+            1.0261780104712,
+            0.710209424083764,
+            0.999399759903961,
+            1.06024096385542,
+            -5.57168674698796,
+            6.54213685474193,
+        ];
+        same_line(passing_bablok(&X, &Y).unwrap(), want, 12);
+        // The order of the points makes no difference.
+        let mut p: Vec<(f64, f64)> = X.iter().copied().zip(Y).collect();
+        p.reverse();
+        p.swap(0, 7);
+        let (x, y): (Vec<f64>, Vec<f64>) = p.into_iter().unzip();
+        same_line(passing_bablok(&x, &y).unwrap(), want, 12);
+    }
+
+    #[test]
+    fn passing_bablok_properties() {
+        // Points on a line give that line exactly.
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let y: Vec<f64> = x.iter().map(|v| 2.0 * v + 3.0).collect();
+        let l = passing_bablok(&x, &y).unwrap();
+        assert_eq!((l.slope, l.intercept), (2.0, 3.0));
+        assert_eq!(l.ci.unwrap().slope, (2.0, 2.0));
+        // Three points by hand: slopes 1 (1→2), 3 (2→3) and 2 (1→3); the
+        // median is 2 and the intercept the median of 1, 0, 1.
+        let l = passing_bablok(&[1.0, 2.0, 3.0], &[3.0, 4.0, 7.0]).unwrap();
+        assert_eq!((l.slope, l.intercept), (2.0, 1.0));
+        assert!(l.ci.is_none());
+        // Swapping the axes inverts the slope.
+        let a = passing_bablok(&X, &Y).unwrap();
+        let b = passing_bablok(&Y, &X).unwrap();
+        close(a.slope * b.slope, 1.0, 12);
+        // An outlier barely moves it; least squares moves a lot more.
+        let mut y2 = Y;
+        y2[3] += 400.0;
+        let moved = passing_bablok(&X, &y2).unwrap().slope - a.slope;
+        let ols = Fit::new(&X, &y2).slope().unwrap() - Fit::new(&X, &Y).slope().unwrap();
+        assert!(moved.abs() < 0.01 && ols.abs() > 0.1, "{moved} {ols}");
+        // Falling data, and a single point, give no line.
+        assert_eq!(
+            passing_bablok(&[1.0, 2.0, 3.0, 4.0], &[8.0, 6.0, 4.0, 2.0]),
+            Err(PbError::Negative)
+        );
+        assert_eq!(passing_bablok(&[1.0], &[1.0]), Err(PbError::TooFewPoints));
     }
 }

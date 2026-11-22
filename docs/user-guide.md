@@ -212,6 +212,90 @@ The line is fitted by ordinary least squares. `count` and the functions in
 this table are only functions when followed by `(`, so a note such as
 `head count 12` still gives 12.
 
+### Comparing two methods
+
+When x and y are the same quantity measured two ways, such as a reference
+method and a new analyser on the same samples, three line fits are usually
+read side by side. The methods agree when the slope's 95% confidence
+interval holds 1 and the intercept's holds 0. The sample sheet "Method
+comparison" shows all three on the same data.
+
+```text
+slope_ci(reference, new)          → [0.986, 1.0576]
+pb_slope(reference, new)          → 1.0262
+pb_slope_ci(reference, new)       → [0.9994, 1.0602]
+deming_intercept_ci(reference, new) → [-4.2115, 12.8468]
+```
+
+| Function | Result |
+|---|---|
+| `slope_ci(x, y)`, `intercept_ci(x, y)` | 95% confidence interval of the least-squares slope or intercept |
+| `pb_slope(x, y)`, `pb_intercept(x, y)` | Passing-Bablok line |
+| `pb_slope_ci(x, y)`, `pb_intercept_ci(x, y)` | Its 95% confidence intervals |
+| `deming_slope(x, y)`, `deming_intercept(x, y)` | Deming line |
+| `deming_slope_ci(x, y)`, `deming_intercept_ci(x, y)` | Its 95% confidence intervals |
+
+- **Least squares** assumes x has no error. A single outlier pulls it the
+  most. Its intervals use Student's t.
+- **Passing-Bablok** takes the median of the slopes between every pair of
+  points, so outliers barely move it, and it assumes nothing about how the
+  errors are spread. It needs x and y that rise together, works on up to
+  1,000 points, and gives intervals from about eight points. It follows
+  Passing and Bablok (1983); pairs with the same x count as vertical.
+- **Deming** allows for measurement error in both methods. Its intervals
+  come from the jackknife (leaving each point out in turn) with Student's t
+  on n − 2 degrees of freedom. With no third value it assumes both methods
+  have the same error. Otherwise give the ratio of x's error variance to
+  y's, as in the R package mcr: `deming_slope(x, y, 0.5)` means x's errors
+  have half the variance of y's. The smaller the ratio, the closer the line
+  comes to least squares.
+
+An interval is a list of two values, lower first. For Passing-Bablok and
+Deming, y is converted to x's unit, the slope has no unit, and the
+intercept is in x's unit.
+
+## Importing data
+
+Columns of numbers from a spreadsheet become lists, one per column, named
+after the column headings:
+
+```text
+# Data from glucose.xlsx
+// 30 rows. Left out: “Sample” (not numbers).
+reference_mg_dl = [398.8, 183.6, 88.2, …]
+new_analyser_mg_dl = [405.6, 204.4, 95.3, …]
+```
+
+In the desktop app:
+
+- **File › Import Data…** (⇧⌘I) reads a CSV or tab-separated file, or an
+  Excel workbook (`.xlsx`). The lines go on the cursor's line when it is
+  empty, otherwise after it.
+- **Pasting cells copied from Excel**, Numbers or Google Sheets does the
+  same when they are two or more columns wide. Other text pastes as it is.
+- **Edit › Paste as Lists** (⇧⌘V) turns any copied cells into lists, a
+  single column included.
+
+How a table is read:
+
+- The first row gives the names when any of its cells is not a number. A
+  heading such as `Reference (mg/dL)` becomes `reference_mg_dl`; without
+  headings the lists are `col1`, `col2`, ….
+- Columns that are not numbers (sample IDs, notes) are left out, and the
+  note under the heading says so.
+- Each row is one sample, so a row missing a number in any column is left
+  out of every list and the lists stay paired. Empty cells, `NA`, `n/a`,
+  `#N/A` and `-` count as missing.
+- `1,5` is read as 1.5 when a column writes its decimals with a comma;
+  `1,500` and `12,345.6` are read with the comma separating thousands.
+  Values such as `12%` make a list of percentages.
+- From a workbook, only the first worksheet is read, and formulas give the
+  value Excel last saved. Dates come in as Excel's day numbers. Older
+  `.xls` files need saving as `.xlsx` or `.csv` first.
+- A table can have up to 10,000 rows.
+
+The phone apps cannot import files yet.
+
 ## Dates and times
 
 ```text
@@ -277,6 +361,8 @@ Editing and sheets:
 | Wrap line or selection in parentheses | ⇧⌘0 |
 | Delete all | ⌥⌘⌫ |
 | Open (import) a file | ⌘O |
+| Import data from CSV or Excel | ⇧⌘I |
+| Paste copied cells as lists | ⇧⌘V |
 | Export to a file | ⌘S |
 | Undo / redo | ⌘Z / ⇧⌘Z |
 | Choose a theme | ⌘K then ⌘T (or click the theme name in the status bar) |
@@ -347,8 +433,8 @@ to a `.trash` folder inside the sheets folder rather than being erased.
 
 A new installation starts with a welcome sheet. When a version of Reckon
 brings a feature worth showing, it also adds one sample sheet for it, on a
-new installation and on the first start after the update. The first is
-"Lists and statistics".
+new installation and on the first start after the update: so far "Lists
+and statistics" and "Method comparison".
 
 A sample appears in the list just below the sheet you had open; it never
 replaces the sheet you are working on. It is an ordinary sheet: edit it, or
@@ -468,11 +554,13 @@ These keep a damaged or hostile file from hanging or crashing the app; you
 are unlikely to meet them in normal use.
 
 - A sheet larger than 4 MB is not opened or listed.
-- A line longer than 8,000 bytes, or with more than 400 numbers, words and
+- A line longer than 128 KB, or with more than 400 numbers, words and
   operators, or nested more than about 45 parentheses deep, gets no result.
+  Plain numbers that are values of a list, such as `[1.5, -2, 3]`, do not
+  count toward the 400, so one line can hold a column of data.
 - A list holds at most 10,000 values, and all the lists written in one
-  sheet at most 100,000. One line fits about 200 plain numbers; join lists
-  to make a longer one.
+  sheet at most 100,000.
+- Passing-Bablok works on up to 1,000 points.
 - Shortcuts and links in the sheets folder (symbolic links) are ignored;
   sheets must be ordinary files.
 
@@ -483,6 +571,9 @@ reckon '20 inches in cm'
 reckon -a -f budget.reckon      print each line next to its result
 cat notes.reckon | reckon       one result per input line
 reckon                          interactive REPL
+reckon -d samples.csv 'pb_slope_ci(reference, new)'
+                                load a CSV or Excel file's columns as lists
+reckon --import samples.xlsx    print a file's columns as sheet lines
 reckon --update-rates           download current exchange rates
 reckon --rates | --plugins      show rate source / loaded plugins
 ```

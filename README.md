@@ -39,6 +39,7 @@ native front ends over the same engine. None of the apps use web views.
 - Variables, `prev`, `sum`/`total`, `avg`/`average`, labels, headers and comments
 - Functions: `sqrt`, `root`, `log`, `ln`, `round`, trigonometry, …
 - Lists and statistics: `median`, `stdev`, `correlation`, and a straight-line fit with `slope`, `intercept` and `predict`
+- Method comparison: Passing-Bablok and Deming regression with 95% confidence intervals, and data imported from CSV or Excel
 - Plugins: plain-text `.reckon` files that add units, variables and functions
 - Sheets: any number of pages with a searchable sidebar, stored as plain
   files in a folder you choose, so iCloud Drive, Dropbox or Syncthing sync

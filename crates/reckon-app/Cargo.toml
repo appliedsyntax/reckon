@@ -10,7 +10,7 @@ name = "reckon-app"
 path = "src/main.rs"
 
 [dependencies]
-reckon-core = { path = "../reckon-core" }
+reckon-core = { path = "../reckon-core", features = ["xlsx"] }
 # `runtime_shaders` compiles Metal shaders at startup, so building does not
 # require the separate Xcode Metal toolchain download.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }

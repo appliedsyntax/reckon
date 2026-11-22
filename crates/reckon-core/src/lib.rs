@@ -19,11 +19,14 @@ pub mod paths;
 pub mod plugin;
 pub mod sheets;
 pub mod stats;
+pub mod table;
 pub mod themes;
 pub mod time;
 pub mod tz;
 pub mod units;
 pub mod value;
+#[cfg(feature = "xlsx")]
+pub mod xlsx;
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -36,7 +39,7 @@ pub use tz::Zone;
 pub use value::{format_value, List, NumFmt, Settings, Show, Value};
 
 use eval::Eval;
-use parser::{classify, highlight_class, ClassifyCtx, Parser, BUILTIN_FUNCS};
+use parser::{classify, highlight_class, ClassifyCtx, Item, Parser, BUILTIN_FUNCS};
 use tz::ZoneDb;
 use units::{Registry, UnitCtx};
 
@@ -87,15 +90,43 @@ pub struct Engine {
 
 /// Longest line that is evaluated; longer ones are treated as text. Sheets
 /// can arrive from a shared folder, so a line must not be able to exhaust
-/// the stack or take unbounded time.
-const MAX_LINE_BYTES: usize = 8 * 1024;
-/// Most numbers, words and operators in one evaluated line. Together with
-/// the parser's nesting limit this bounds how deep evaluation recurses.
+/// the stack or take unbounded time. Room for a list of 10,000 measurements.
+const MAX_LINE_BYTES: usize = 128 * 1024;
+/// Most numbers, words and operators in one evaluated line (see
+/// [`weight`]). Together with the parser's nesting limit this bounds how
+/// deep evaluation recurses.
 const MAX_LINE_ITEMS: usize = 400;
 const TOO_LONG: &str = "line is too long to evaluate";
 /// Most user-function calls one line may make. The nesting limit alone
 /// allows functions that call each other twice to do 2^32 evaluations.
 pub(crate) const MAX_CALLS: u32 = 10_000;
+
+/// How many of a line's items count toward [`MAX_LINE_ITEMS`]. A plain
+/// number that is a whole value in a list, as in `[1.5, -2, 3]`, does not
+/// make evaluation go any deeper, so it counts as nothing, and so do its
+/// sign and the comma after it. That lets a line hold a column of data.
+fn weight(items: &[parser::It]) -> usize {
+    let sym = |i: usize, c: &[char]| matches!(items.get(i), Some(it) if matches!(it.item, Item::Sym(x) if c.contains(&x)));
+    let mut depth = 0usize;
+    let mut free = 0;
+    for (i, it) in items.iter().enumerate() {
+        match it.item {
+            Item::Sym('[') => depth += 1,
+            Item::Sym(']') => depth = depth.saturating_sub(1),
+            Item::Num(..) if depth > 0 => {
+                let signed = i > 0 && sym(i - 1, &['-']);
+                let start = i - usize::from(signed);
+                let after_open = start > 0 && sym(start - 1, &['[', ',', ';']);
+                let comma = sym(i + 1, &[',', ';']);
+                if after_open && (comma || sym(i + 1, &[']']) || i + 1 == items.len()) {
+                    free += 1 + usize::from(signed) + usize::from(comma);
+                }
+            }
+            _ => {}
+        }
+    }
+    items.len() - free
+}
 
 impl Default for Engine {
     fn default() -> Self {
@@ -197,6 +228,57 @@ impl Engine {
         self.zones.set_local(iana, offset_secs);
     }
 
+    /// Sheet lines holding a table's columns of numbers as lists (see
+    /// [`table::to_sheet`]). A column heading becomes a list's name unless
+    /// the engine would read that name as something else.
+    pub fn import_table(
+        &self,
+        rows: &table::Rows,
+        source: &str,
+    ) -> Result<table::Imported, String> {
+        let free = |name: &str| {
+            let mut st = DocState::default();
+            self.eval_line(&format!("{name} = [1, 2]"), &mut st, 0.0);
+            let out = self.eval_line(&format!("count({name})"), &mut st, 0.0);
+            out.text.as_deref() == Some("2")
+        };
+        table::to_sheet(rows, source, &free)
+    }
+
+    /// Sheet lines for a data file: CSV or tab-separated text, or (with the
+    /// `xlsx` feature) an Excel workbook, whose first worksheet is read.
+    pub fn import_file(&self, path: &std::path::Path) -> Result<table::Imported, String> {
+        let name = path
+            .file_name()
+            .map_or_else(|| "data".into(), |n| n.to_string_lossy().into_owned());
+        let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+        if size > 50 * 1024 * 1024 {
+            return Err("the file is larger than 50 MB".into());
+        }
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let is_zip = bytes.starts_with(b"PK\x03\x04");
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        if is_zip || matches!(ext.as_deref(), Some("xlsx" | "xlsm" | "xls")) {
+            #[cfg(feature = "xlsx")]
+            {
+                let sheet = xlsx::read(&bytes)?;
+                let source = if sheet.sheets > 1 {
+                    format!("{name} (sheet “{}”)", sheet.name)
+                } else {
+                    name
+                };
+                return self.import_table(&sheet.rows, &source);
+            }
+            #[cfg(not(feature = "xlsx"))]
+            return Err("Excel workbooks cannot be read here; save it as .csv".into());
+        }
+        let text = String::from_utf8(bytes)
+            .unwrap_or_else(|e| e.into_bytes().iter().map(|b| *b as char).collect());
+        self.import_table(&table::parse_delimited(&text), &name)
+    }
+
     // ---------------------------------------------------------- evaluation
 
     /// Evaluates every line of a document.
@@ -257,7 +339,7 @@ impl Engine {
         }
         let toks = lexer::tokenize(text);
         let items = self.classify_tokens(&toks, st);
-        if items.len() > MAX_LINE_ITEMS {
+        if weight(&items) > MAX_LINE_ITEMS {
             return Err(TOO_LONG.into());
         }
         let expr = Parser::new(&items, &self.reg).parse_line()?;
@@ -304,7 +386,7 @@ impl Engine {
         if items.is_empty() {
             return out;
         }
-        if items.len() > MAX_LINE_ITEMS {
+        if weight(&items) > MAX_LINE_ITEMS {
             out.error = Some(TOO_LONG.into());
             return out;
         }

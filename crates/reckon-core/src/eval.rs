@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::parser::{BinOp, Expr, Pct, Target};
-use crate::stats::{self, Fit};
+use crate::stats::{self, Fit, Line, PbError, PB_MAX_POINTS};
 use crate::time::{add_months, civil_from_days, days_from_civil, days_in_month, split};
 use crate::tz::Zone;
 use crate::units::{dim, Conv, Unit, UnitCtx, ANGLE, DIM_COUNT, TIME};
@@ -26,7 +26,14 @@ pub struct DocState {
     /// Numbers put into lists so far in this document (see
     /// [`MAX_DOC_LIST_VALUES`]).
     pub list_values: usize,
+    /// The last Passing-Bablok fit and the two lists it was made from, so
+    /// that the slope, intercept and intervals of the same data, on four
+    /// lines, cost one fit.
+    pub pb_cache: Option<PbCache>,
 }
+
+/// A Passing-Bablok fit and the lists (x, y) it was made from.
+pub type PbCache = (Arc<List>, Arc<List>, Result<Line, PbError>);
 
 /// Most numbers one list holds.
 const MAX_LIST_VALUES: usize = 10_000;
@@ -47,6 +54,7 @@ impl Default for DocState {
             prev: None,
             block: Vec::new(),
             list_values: 0,
+            pb_cache: None,
         }
     }
 }
@@ -685,7 +693,15 @@ impl<'a> Eval<'a> {
             "sum" | "mean" | "median" | "stdev" | "stddev" | "pstdev" | "variance"
             | "pvariance" | "count" => return self.describe(name, vals),
             "correlation" | "correl" | "corr" | "slope" | "intercept" | "rsquared" | "r2"
-            | "predict" => return self.regress(name, &vals),
+            | "predict" | "slope_ci" | "intercept_ci" => return self.regress(name, &vals),
+            "pb_slope"
+            | "pb_intercept"
+            | "pb_slope_ci"
+            | "pb_intercept_ci"
+            | "deming_slope"
+            | "deming_intercept"
+            | "deming_slope_ci"
+            | "deming_intercept_ci" => return self.compare(name, &vals),
             _ => {}
         }
         let arg = |i: usize| -> Result<Value, String> {
@@ -949,12 +965,19 @@ impl<'a> Eval<'a> {
         let no_line = || "there is no line when every x is the same".to_string();
         let no_r = || "there is no correlation when a list never changes".to_string();
         match name {
-            "slope" => {
-                let rise = y.value(fit.slope().ok_or_else(no_line)?);
-                if x.unit.is_none() || y.percent {
-                    return Ok(rise);
+            "slope" => self.slope_value(fit.slope().ok_or_else(no_line)?, x, y),
+            "slope_ci" | "intercept_ci" => {
+                fit.slope().ok_or_else(no_line)?;
+                let ci = fit
+                    .intervals()
+                    .ok_or_else(|| format!("{name} needs at least three points"))?;
+                if name == "slope_ci" {
+                    let lo = self.slope_value(ci.slope.0, x, y)?;
+                    let hi = self.slope_value(ci.slope.1, x, y)?;
+                    self.interval(lo, hi)
+                } else {
+                    self.interval(y.value(ci.intercept.0), y.value(ci.intercept.1))
                 }
-                self.mul(rise, Value::qty(1.0, x.unit.clone()), true)
             }
             "intercept" => Ok(y.value(fit.intercept().ok_or_else(no_line)?)),
             "predict" => {
@@ -972,6 +995,121 @@ impl<'a> Eval<'a> {
             }
             "rsquared" | "r2" => Ok(Value::num(fit.correlation().ok_or_else(no_r)?.powi(2))),
             _ => Ok(Value::num(fit.correlation().ok_or_else(no_r)?)),
+        }
+    }
+
+    /// A least-squares slope in units of y per unit of x.
+    fn slope_value(&mut self, b: f64, x: &List, y: &List) -> R {
+        let rise = y.value(b);
+        if x.unit.is_none() || y.percent {
+            return Ok(rise);
+        }
+        self.mul(rise, Value::qty(1.0, x.unit.clone()), true)
+    }
+
+    /// A confidence interval: a list of its lower and upper limit.
+    fn interval(&self, lo: Value, hi: Value) -> R {
+        Ok(Value::List(Arc::new(self.gather(&[lo, hi], true)?)))
+    }
+
+    /// Method comparison, where x and y measure the same thing in two ways:
+    /// `pb_slope(x, y)` (Passing-Bablok) and `deming_slope(x, y, ratio)`,
+    /// with `_intercept` and `_ci` forms. The slope has no unit; y is put in
+    /// x's unit first.
+    fn compare(&mut self, name: &str, vals: &[Value]) -> R {
+        let deming = name.starts_with("deming");
+        let most = if deming { 3 } else { 2 };
+        let (Some(Value::List(x)), Some(Value::List(y)), true) =
+            (vals.first(), vals.get(1), (2..=most).contains(&vals.len()))
+        else {
+            return Err(if deming {
+                format!("{name} needs two lists, and an error ratio if it is not 1: {name}(x, y)")
+            } else {
+                format!("{name} needs two lists: {name}(x, y)")
+            });
+        };
+        let (x, y) = (x.clone(), y.clone());
+        if x.v.len() != y.v.len() {
+            return Err("the two lists must hold the same number of values".into());
+        }
+        if x.v.len() < 2 {
+            return Err(format!("{name} needs at least two points"));
+        }
+        if x.percent != y.percent {
+            return Err("cannot mix percentages and numbers".into());
+        }
+        let unit = if x.unit.is_none() { &y.unit } else { &x.unit };
+        let units = List {
+            v: Vec::new(),
+            unit: unit.clone(),
+            percent: x.percent,
+        };
+        let convert = |l: &List| -> Result<Vec<f64>, String> {
+            if l.unit.is_none() || l.unit == units.unit {
+                return Ok(l.v.clone());
+            }
+            let ucx = self.ucx();
+            l.v.iter()
+                .map(|v| ucx.convert(*v, &l.unit, &units.unit))
+                .collect::<Result<_, _>>()
+                .map_err(|_| "both lists need the same kind of unit".to_string())
+        };
+        let (xv, yv) = (convert(&x)?, convert(&y)?);
+        let n = xv.len();
+        let line = if deming {
+            let ratio = match vals.get(2) {
+                None => 1.0,
+                Some(Value::Num(q)) if q.unit.is_none() && q.v.is_finite() && q.v > 0.0 => q.v,
+                Some(_) => return Err("the error ratio must be a positive number".into()),
+            };
+            self.charge(n)?;
+            stats::deming(&xv, &yv, ratio)
+                .ok_or("there is no line when x and y do not vary together")?
+        } else {
+            if n > PB_MAX_POINTS {
+                return Err(format!("{name} works on up to 1,000 points"));
+            }
+            let cached = match &self.st.pb_cache {
+                Some((cx, cy, fit)) if Arc::ptr_eq(cx, &x) && Arc::ptr_eq(cy, &y) => Some(*fit),
+                _ => None,
+            };
+            let fit = match cached {
+                Some(fit) => {
+                    self.charge(n)?;
+                    fit
+                }
+                None => {
+                    self.charge(n * (n - 1) / 2)?;
+                    let fit = stats::passing_bablok(&xv, &yv);
+                    self.st.pb_cache = Some((x.clone(), y.clone(), fit));
+                    fit
+                }
+            };
+            fit.map_err(|e| match e {
+                PbError::TooFewPoints => "there is no line when every point is the same",
+                PbError::Negative => "Passing-Bablok needs x and y that rise together",
+            })?
+        };
+        let ci = || {
+            line.ci.ok_or_else(|| {
+                if deming {
+                    format!("{name} needs at least three points")
+                } else {
+                    format!("{name} needs more points for a confidence interval")
+                }
+            })
+        };
+        match name.split_once('_').map_or("", |p| p.1) {
+            "slope" => Ok(Value::num(line.slope)),
+            "intercept" => Ok(units.value(line.intercept)),
+            "slope_ci" => {
+                let (lo, hi) = ci()?.slope;
+                self.interval(Value::num(lo), Value::num(hi))
+            }
+            _ => {
+                let (lo, hi) = ci()?.intercept;
+                self.interval(units.value(lo), units.value(hi))
+            }
         }
     }
 }

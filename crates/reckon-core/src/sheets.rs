@@ -343,8 +343,13 @@ pub fn restore(dir: &Path, trashed: &Path) -> io::Result<String> {
 /// Sheets that come with the app besides the welcome sheet, as (id, text).
 /// Each one shows a feature, and is added to a sheets folder once: on a new
 /// installation, or on the first start after the update that brings it.
-pub const SAMPLES: &[(&str, &str)] =
-    &[("statistics", include_str!("../samples/statistics.reckon"))];
+pub const SAMPLES: &[(&str, &str)] = &[
+    ("statistics", include_str!("../samples/statistics.reckon")),
+    (
+        "method-comparison",
+        include_str!("../samples/method-comparison.reckon"),
+    ),
+];
 
 /// Hidden file in a sheets folder that lists the ids of the samples already
 /// added to it, one per line. It lives in the folder, not in the app's
@@ -507,19 +512,20 @@ mod tests {
     #[test]
     fn samples_are_added_once() {
         let titles = |d: &Path| -> Vec<String> { list(d).into_iter().map(|s| s.title).collect() };
-        let sample = "Lists and statistics".to_string();
+        let samples = ["Lists and statistics", "Method comparison"].map(String::from);
 
-        // A new installation gets the sample, and opens the welcome sheet.
+        // A new installation gets the samples, and opens the welcome sheet.
         let d = temp("samples-new");
         assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Welcome.reckon");
         let mut got = titles(&d);
         got.sort();
-        assert_eq!(got, [sample.clone(), "Welcome".to_string()]);
+        assert_eq!(got, [&samples[..], &["Welcome".to_string()]].concat());
         // Starting again adds nothing, and still opens the welcome sheet.
         assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Welcome.reckon");
-        assert_eq!(list(&d).len(), 2);
+        assert_eq!(list(&d).len(), 3);
         // A deleted sample stays deleted.
         trash(&d, "Lists and statistics.reckon").unwrap();
+        trash(&d, "Method comparison.reckon").unwrap();
         prepare(&d, None, "# Welcome").unwrap();
         assert_eq!(titles(&d), ["Welcome"]);
         let _ = fs::remove_dir_all(&d);
@@ -529,16 +535,19 @@ mod tests {
         let d = temp("samples-update");
         create(&d, "# Mine\n1 + 1").unwrap();
         assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Mine.reckon");
-        // The sample is listed right under it, and does not take its place
+        // The samples are listed right under it, and do not take its place
         // on the next start either.
-        assert_eq!(titles(&d), ["Mine".to_string(), sample]);
+        assert_eq!(titles(&d)[0], "Mine");
+        let mut got = titles(&d)[1..].to_vec();
+        got.sort();
+        assert_eq!(got, samples);
         assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Mine.reckon");
         // The record survives a later sample being added to it.
         fs::write(d.join(SAMPLES_SEEN), "something-older").unwrap();
         prepare(&d, None, "# Welcome").unwrap();
         assert_eq!(
             fs::read_to_string(d.join(SAMPLES_SEEN)).unwrap(),
-            "something-older\nstatistics\n"
+            "something-older\nstatistics\nmethod-comparison\n"
         );
         let _ = fs::remove_dir_all(&d);
     }

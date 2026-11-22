@@ -5,4 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Natural-language calculator engine"
 
+[features]
+# Reading Excel workbooks, for the desktop app and the command line. The
+# engine itself, as the phone apps use it, has no dependencies.
+xlsx = ["dep:miniz_oxide", "dep:roxmltree"]
+
 [dependencies]
+miniz_oxide = { version = "0.8", optional = true }
+roxmltree = { version = "0.20", optional = true }

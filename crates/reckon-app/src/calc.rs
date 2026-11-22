@@ -16,7 +16,7 @@ use gpui::{
     Pixels, Point, ScrollHandle, ShapedLine, SharedString, Style, Subscription, TextRun,
     UTF16Selection, Window,
 };
-use reckon_core::{paths, Engine, Hl, LineKind, LineOutput, Rates};
+use reckon_core::{paths, table, Engine, Hl, LineKind, LineOutput, Rates};
 
 use crate::theme::{Pattern, Theme, ThemeChoice, THEMES};
 
@@ -65,6 +65,8 @@ actions!(
         WrapParens,
         Open,
         Export,
+        ImportData,
+        PasteAsLists,
         Quit,
         ShowCharacterPalette,
         NewSheet,
@@ -1344,9 +1346,85 @@ impl Calc {
     }
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = cx.read_from_clipboard().and_then(|i| i.text()) {
+            let t = t.replace("\r\n", "\n");
+            // Cells copied from a spreadsheet become lists, one per column.
+            if !self.quick && table::looks_like_table(&t) {
+                let lists = self
+                    .engine
+                    .import_table(&table::parse_delimited(&t), "pasted cells");
+                self.add_lists(lists, "Pasted", cx);
+                return;
+            }
             self.typing = false;
-            self.replace(self.sel.clone(), &t.replace("\r\n", "\n"), cx);
+            self.replace(self.sel.clone(), &t, cx);
         }
+    }
+    /// Pastes text as lists even when it is a single column, or not
+    /// separated by tabs.
+    fn paste_as_lists(&mut self, _: &PasteAsLists, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = cx.read_from_clipboard().and_then(|i| i.text()) else {
+            self.set_status("Nothing to paste");
+            cx.notify();
+            return;
+        };
+        let lists = self
+            .engine
+            .import_table(&table::parse_delimited(&t), "pasted cells");
+        self.add_lists(lists, "Pasted", cx);
+    }
+    fn import_data(&mut self, _: &ImportData, _: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let lists = this.engine.import_file(&path);
+                this.add_lists(lists, "Imported", cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+    /// Puts lines made from a table into the sheet: on the cursor's line when
+    /// it is empty, otherwise after it.
+    fn add_lists(
+        &mut self,
+        lists: Result<table::Imported, String>,
+        verb: &str,
+        cx: &mut Context<Self>,
+    ) {
+        match lists {
+            Ok(i) => {
+                let r = self.line_range(self.row_of(self.cursor()));
+                let (at, block) = if self.text[r.clone()].trim().is_empty() {
+                    (r, i.text)
+                } else {
+                    (r.end..r.end, format!("\n{}", i.text))
+                };
+                let end = at.start + block.len();
+                self.typing = false;
+                self.replace(at, &block, cx);
+                self.move_to(end, cx);
+                let n = i.names.len();
+                self.set_status(format!(
+                    "{verb} {n} {} of {} values: {}",
+                    if n == 1 { "list" } else { "lists" },
+                    i.rows,
+                    i.names.join(", ")
+                ));
+            }
+            Err(e) => self.set_status(format!("Could not import: {e}")),
+        }
+        cx.notify();
     }
     fn undo_a(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(s) = self.undo.pop() {
@@ -2313,6 +2391,8 @@ impl Render for Calc {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_as_lists))
+            .on_action(cx.listener(Self::import_data))
             .on_action(cx.listener(Self::undo_a))
             .on_action(cx.listener(Self::redo_a))
             .on_action(cx.listener(Self::copy_result))

@@ -10,4 +10,4 @@ name = "reckon"
 path = "src/main.rs"
 
 [dependencies]
-reckon-core = { path = "../reckon-core" }
+reckon-core = { path = "../reckon-core", features = ["xlsx"] }

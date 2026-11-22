@@ -11,6 +11,7 @@ reckon — natural-language calculator
 USAGE:
     reckon [OPTIONS] [EXPRESSION...]
     reckon -f FILE
+    reckon -d DATA [EXPRESSION...]
     echo '20 inches in cm' | reckon
 
 With no expression and an interactive terminal, starts a REPL where
@@ -18,6 +19,9 @@ variables, prev, sum and avg carry over between lines.
 
 OPTIONS:
     -f, --file FILE      Evaluate every line of FILE
+    -d, --data FILE      Load each column of numbers in FILE (CSV, tab-separated
+                         or Excel .xlsx) as a list named after its heading
+        --import FILE    Print FILE's columns as sheet lines and exit
     -a, --annotate       Print each input line next to its result
     -p, --precision N    Maximum decimal places (default 4)
         --24h            Use a 24-hour clock
@@ -33,12 +37,15 @@ EXAMPLES:
     reckon 'today + 2 weeks'
     reckon '2:30 pm HKT in Berlin'
     reckon -a -f budget.reckon
+    reckon -d samples.csv 'pb_slope_ci(reference, new)'
 ";
 
 #[derive(Default)]
 struct Opts {
     exprs: Vec<String>,
     file: Option<String>,
+    data: Option<String>,
+    import: Option<String>,
     annotate: bool,
     precision: Option<usize>,
     hour24: bool,
@@ -67,6 +74,8 @@ fn parse_args() -> Result<Opts, String> {
                 std::process::exit(0);
             }
             "-f" | "--file" => o.file = Some(args.next().ok_or("--file needs a path")?),
+            "-d" | "--data" => o.data = Some(args.next().ok_or("--data needs a path")?),
+            "--import" => o.import = Some(args.next().ok_or("--import needs a path")?),
             "-a" | "--annotate" => o.annotate = true,
             "-p" | "--precision" => {
                 let v = args.next().ok_or("--precision needs a number")?;
@@ -162,8 +171,36 @@ fn main() -> ExitCode {
         eprintln!("reckon: plugin error: {e}");
     }
 
+    let import = |path: &str| {
+        engine
+            .import_file(std::path::Path::new(path))
+            .map_err(|e| eprintln!("reckon: {path}: {e}"))
+    };
+    if let Some(path) = &opts.import {
+        return match import(path) {
+            Ok(i) => {
+                println!("{}", i.text);
+                ExitCode::SUCCESS
+            }
+            Err(()) => ExitCode::FAILURE,
+        };
+    }
+    // Lines that load the data, evaluated before everything else and not
+    // printed.
+    let data = match &opts.data {
+        Some(path) => match import(path) {
+            Ok(i) => i.text + "\n",
+            Err(()) => return ExitCode::FAILURE,
+        },
+        None => String::new(),
+    };
+
     if !opts.exprs.is_empty() {
-        return run_single(&engine, &opts.exprs.join(" "));
+        let expr = opts.exprs.join(" ");
+        if data.is_empty() {
+            return run_single(&engine, &expr);
+        }
+        return run_with_data(&engine, &data, &expr);
     }
     let text = if let Some(path) = &opts.file {
         match std::fs::read_to_string(path) {
@@ -181,10 +218,26 @@ fn main() -> ExitCode {
         }
         t
     } else {
-        return repl(&engine);
+        return repl(&engine, &data);
     };
-    run_document(&engine, &text, opts.annotate);
+    run_document(&engine, &data, &text, opts.annotate);
     ExitCode::SUCCESS
+}
+
+/// One expression after the data's lines.
+fn run_with_data(engine: &Engine, data: &str, expr: &str) -> ExitCode {
+    let out = engine.evaluate(&format!("{data}{expr}"));
+    match out.last() {
+        Some(o) if o.text.is_some() => {
+            println!("{}", o.text.as_deref().unwrap_or(""));
+            ExitCode::SUCCESS
+        }
+        o => {
+            let e = o.and_then(|o| o.error.clone());
+            eprintln!("reckon: {}", e.unwrap_or_else(|| "no result".into()));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_single(engine: &Engine, expr: &str) -> ExitCode {
@@ -200,10 +253,11 @@ fn run_single(engine: &Engine, expr: &str) -> ExitCode {
     }
 }
 
-fn run_document(engine: &Engine, text: &str, annotate: bool) {
+fn run_document(engine: &Engine, data: &str, text: &str, annotate: bool) {
     let text = text.strip_suffix('\n').unwrap_or(text);
     let lines: Vec<&str> = text.split('\n').collect();
-    let out = engine.evaluate(text);
+    let mut out = engine.evaluate(&format!("{data}{text}"));
+    out.drain(..data.matches('\n').count());
     let width = lines
         .iter()
         .map(|l| l.chars().count())
@@ -225,12 +279,13 @@ fn run_document(engine: &Engine, text: &str, annotate: bool) {
     }
 }
 
-fn repl(engine: &Engine) -> ExitCode {
+fn repl(engine: &Engine, data: &str) -> ExitCode {
     println!(
         "reckon {} — type an expression, :clear to reset, :q to quit",
         env!("CARGO_PKG_VERSION")
     );
-    let mut doc: Vec<String> = Vec::new();
+    let start: Vec<String> = data.lines().map(String::from).collect();
+    let mut doc = start.clone();
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
     loop {
@@ -240,7 +295,7 @@ fn repl(engine: &Engine) -> ExitCode {
         match line.trim() {
             ":q" | ":quit" | "exit" | "quit" => break,
             ":clear" => {
-                doc.clear();
+                doc.clone_from(&start);
                 continue;
             }
             _ => {}

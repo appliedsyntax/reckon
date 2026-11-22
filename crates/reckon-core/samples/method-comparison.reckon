@@ -1,0 +1,31 @@
+# Method comparison
+// Thirty samples, each measured by a reference method and by a new one.
+// In the desktop app, File › Import Data reads your own from CSV or Excel.
+reference = [398.8, 183.6, 88.2, 74, 140.9, 332, 173.2, 397.8, 99.7, 218.6, 111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9, 270.6, 159, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7]
+new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167, 290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223, 395.7, 168]
+// The methods agree when the slope's 95% interval holds 1 and the
+// intercept's holds 0.
+
+# Least squares
+// The usual line fit. Outliers pull it the most.
+Slope: slope(reference, new)
+Slope 95% CI: slope_ci(reference, new)
+Intercept: intercept(reference, new)
+Intercept 95% CI: intercept_ci(reference, new)
+
+# Passing-Bablok
+// Made from the median of the slopes between every pair of samples, so
+// an outlier such as sample 12 barely moves it.
+Slope: pb_slope(reference, new)
+Slope 95% CI: pb_slope_ci(reference, new)
+Intercept: pb_intercept(reference, new)
+Intercept 95% CI: pb_intercept_ci(reference, new)
+
+# Deming
+// Allows for measurement error in both methods. With equal error it needs
+// nothing more; otherwise add the ratio of the reference's error variance
+// to the new method's: deming_slope(reference, new, 0.5).
+Slope: deming_slope(reference, new)
+Slope 95% CI: deming_slope_ci(reference, new)
+Intercept: deming_intercept(reference, new)
+Intercept 95% CI: deming_intercept_ci(reference, new)

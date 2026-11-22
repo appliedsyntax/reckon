@@ -136,6 +136,16 @@ pub const BUILTIN_FUNCS: &[&str] = &[
     "rsquared",
     "r2",
     "predict",
+    "slope_ci",
+    "intercept_ci",
+    "pb_slope",
+    "pb_intercept",
+    "pb_slope_ci",
+    "pb_intercept_ci",
+    "deming_slope",
+    "deming_intercept",
+    "deming_slope_ci",
+    "deming_intercept_ci",
 ];
 
 /// Functions that also work with no arguments, on the lines above, the way
@@ -161,6 +171,16 @@ const CALL_ONLY_FUNCS: &[&str] = &[
     "rsquared",
     "r2",
     "predict",
+    "slope_ci",
+    "intercept_ci",
+    "pb_slope",
+    "pb_intercept",
+    "pb_slope_ci",
+    "pb_intercept_ci",
+    "deming_slope",
+    "deming_intercept",
+    "deming_slope_ci",
+    "deming_intercept_ci",
 ];
 
 /// Whether a function name at this position is a call or a word in a note.

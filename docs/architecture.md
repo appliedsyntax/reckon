@@ -3,10 +3,10 @@
 ## Crates
 
 ```text
-reckon-core   engine library                  std only
+reckon-core   engine library                  std only (+ xlsx feature)
    ▲  ▲  ▲
-   │  │  └── reckon-cli   `reckon` binary      std only
-   │  └───── reckon-app   desktop app          gpui
+   │  │  └── reckon-cli   `reckon` binary      xlsx feature
+   │  └───── reckon-app   desktop app          gpui, xlsx feature
    └──────── reckon-ffi   C interface          std only
                 ▲    ▲
                 │    └── android/  Java + JNI shim (framework views)
@@ -14,6 +14,9 @@ reckon-core   engine library                  std only
 ```
 
 The engine has no UI and no dependencies, so every front end shares it.
+The optional `xlsx` feature adds Excel import (`xlsx.rs`) with two small
+pure-Rust crates, `miniz_oxide` and `roxmltree`, that the desktop app
+already used through GPUI; the phone library builds without it.
 
 ## Evaluating a line
 
@@ -48,12 +51,31 @@ text ─► prepare ─► lexer ─► classify ─► parser ─► eval ─�
    `Time(DateTime)` and `List` (numbers that share one unit, converted when
    the list is written). The statistics themselves are in `stats.rs`, on
    plain numbers; two of its tests compare against NIST reference data
-   sets.
+   sets. The method-comparison fits (Passing-Bablok, Deming, and confidence
+   intervals for least squares) are checked against values computed in R
+   by independent code. Student's t comes from the regularised incomplete
+   beta function; Deming's jackknife leaves each point out by downdating
+   the centred sums, so it costs O(n). `DocState` keeps the last
+   Passing-Bablok fit with the two lists it came from, so its slope,
+   intercept and intervals on four lines cost one fit.
 6. **format** (`value.rs`) handles grouping, precision, currency symbols,
    radix formats and date display.
 
 `DocState` carries variables, `prev`, the current `sum` block and the
 `ppi`/`em` values from line to line.
+
+## Importing tables
+
+`table.rs` turns rows of cell text into sheet lines: a heading, a note on
+what was left out, and one `name = [values]` line per column of numbers.
+It splits CSV and tab-separated text (RFC 4180 quoting), finds the header
+row, reads each column's decimal mark, and leaves out non-numeric columns
+and rows with a missing number, so the lists stay paired.
+`Engine::import_table` checks each name by assigning to it and reading it
+back, so a heading such as `in` or `sum` becomes `col_in`. `xlsx.rs` reads
+the first worksheet of a workbook: a minimal zip reader (stored and
+deflated entries) and the shared strings, workbook and sheet XML, with
+DTDs refused and every size bounded.
 
 ## Units
 
@@ -260,8 +282,11 @@ untrusted.
   the first 4 KB of each sheet (title and preview).
 - **File names.** A sheet name with a path separator or a leading dot is
   refused, including through the C interface.
-- **Lines.** A line over 8 KB, or with more than 400 numbers, words and
-  operators, is not evaluated. The parser stops at 96 levels of nesting
+- **Lines.** A line over 128 KB, or with more than 400 numbers, words and
+  operators, is not evaluated. A plain number that is a whole value of a
+  list (`[1.5, -2, 3]`), with its sign and comma, counts as nothing, since
+  the parser reads list values in a loop; anything that nests (`[1 2 3]`
+  multiplies, `[(1), (2)]`) still counts. The parser stops at 96 levels of nesting
   (parentheses, signs, powers). These bound the recursion depth: the
   deepest line allowed needs about 230 KB of stack in a release build,
   and the smallest main-thread stack Reckon runs on is 1 MB (iOS,
@@ -273,7 +298,10 @@ untrusted.
   when it is assigned or shown. The lists written in one document hold at
   most 100,000 numbers in total, because every line's result is kept while
   the sheet is open. A statistics function counts against the call budget
-  above, one call for every 64 numbers it works through.
+  above, one call for every 64 numbers it works through; Passing-Bablok
+  counts the pairs, and takes at most 1,000 points (half a million pairs).
+- **Imported files.** At most 50 MB, 10,000 rows and 200 columns. A
+  workbook's parts are decompressed to at most 200 MB each.
 - **Rates.** `curl` is restricted to HTTPS (also after redirects) and to a
   1 MB response. The JSON reader stops at 32 levels and 1 MB. Rates must be
   positive, finite numbers with alphanumeric codes, and the update time is
