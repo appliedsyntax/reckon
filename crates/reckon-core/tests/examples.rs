@@ -576,6 +576,21 @@ fn machine_learning_units() {
             "5 tokens in GB",
             "<no result: Some(\"cannot convert tok to GB\")>",
         ),
+        // Different kinds of count do not mix; a plain number goes with any.
+        (
+            "3 tokens + 2 params",
+            "<no result: Some(\"cannot convert param to tok\")>",
+        ),
+        (
+            "1M tokens in FLOP",
+            "<no result: Some(\"cannot convert tok to FLOP\")>",
+        ),
+        (
+            "7B params in tokens",
+            "<no result: Some(\"cannot convert param to tok\")>",
+        ),
+        ("5 Mtok + 2000 tokens", "5.002 Mtok"),
+        ("8.4e22 in EFLOP", "84,000 EFLOP"),
     ]);
 }
 
@@ -658,12 +673,89 @@ fn unknown_functions_and_units_are_errors() {
             "sigmoyd(0)",
             "<no result: Some(\"unknown function sigmoyd\")>",
         ),
-        ("989TFLOPZ", "<no result: Some(\"unknown unit TFLOPZ\")>"),
-        // Prose is still fine: unknown words that are not stuck to a number
-        // or to an opening parenthesis, ordinals, and `2x`.
-        ("fooBar 3", "3"),
-        ("my 2nd try: 7", "7"),
+        (
+            "989TFLOPZ",
+            "<no result: Some(\"unknown unit TFLOPZ; did you mean TFLOPS?\")>",
+        ),
+        (
+            "4bytess",
+            "<no result: Some(\"unknown unit bytess; did you mean bytes?\")>",
+        ),
+        // Other words stuck to a number are ignored, as they always were.
+        ("2pcs at $5", "$10"),
+        ("Screen: 1080p", "1,080"),
+        ("5kgz", "5"),
         ("2x", "2"),
-        ("8 GPUs * $2/h * 24 h", "$384"),
     ]);
+}
+
+/// Everyday notes give what they gave before the unknown-unit check: only a
+/// near-miss of a real unit is an error. The expected results are main's at
+/// 0b7f5e5.
+#[test]
+fn everyday_notes_are_unchanged() {
+    let rows: &[(&str, &str)] = &[
+        ("# Shopping", ""),
+        ("2pcs at $5", "$10"),
+        ("3 apples at $1.20", "$3.60"),
+        ("Screen: 1080p", "1,080"),
+        ("TV 4K 55in for $499", ""),
+        ("2x faster", "2"),
+        ("10x cheaper than last year", "10 years"),
+        ("Paid $20 for 3kg of rice", "60 kg·USD"),
+        ("5kgs of flour 12", ""),
+        ("12oz coffee $4", ""),
+        ("Bought 2pkts of milk 3", ""),
+        ("the 3rd box costs 4", "12"),
+        ("my 2nd try: 7", "7"),
+        ("1st quarter revenue $1,200", ""),
+        ("Q3 total 4500", "$5,015,700"),
+        ("Room 101: 3 nights at $80", "$240"),
+        ("Flight 6E2134 $230", "$∞"),
+        ("iPhone 15 Pro $999", "$14,985"),
+        ("Model T 1908", "1,908"),
+        ("covid-19 test $50", "-$950"),
+        ("24/7 support 30", "102.8571"),
+        ("5G plan $40", "$200"),
+        ("A4 paper 500 sheets 6", "3,000"),
+        ("B2B sales 1200", "1,200"),
+        ("Size 10.5 shoes $80", "$840"),
+        ("v2.0 release 3 days", "0 days"),
+        ("Monday: 42", "42"),
+        ("Tuesday 38", "38"),
+        ("sum", "$∞"),
+        ("# Work", ""),
+        ("8 GPUs * $2/h * 24 h", "$384"),
+        ("standup 15min", "15 min"),
+        ("meeting 1hr 30min", "90 min"),
+        ("3hrs at $40/h", ""),
+        ("commute 25mins each way * 2", "50 min"),
+        ("2wks vacation", "2 weeks"),
+        ("6mos rent $1,200 * 6", "$43,200"),
+        ("5yrs at 3%", "0.15 years"),
+        ("deadline in 3days", ""),
+        ("version 3b", "3 b"),
+        ("batch size 32", "32"),
+        ("lr 3e-4", "0.0003"),
+        ("epochs 10", "10"),
+        ("seq len 4096", "4,096"),
+        ("1.5x speedup on 8 nodes", ""),
+        ("50ms latency p99", "50 ms"),
+        ("200req/s for 1 h", "720,000"),
+        ("2TB disk at $0.02/GB", ""),
+        ("12GB VRAM", "12 GB"),
+        ("16gb ram", "16"),
+        ("100Mbps link for 1 h in GB", ""),
+        ("total", "$767,738"),
+    ];
+    let sheet: Vec<&str> = rows.iter().map(|r| r.0).collect();
+    let out = engine().evaluate(&sheet.join("\n"));
+    let mut failures = Vec::new();
+    for ((line, want), o) in rows.iter().zip(&out) {
+        let got = o.text.as_deref().unwrap_or("");
+        if got != *want {
+            failures.push(format!("{line:?}: want {want:?}, got {got:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

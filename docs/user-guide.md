@@ -13,7 +13,7 @@ lines above it.
 | `Rent: $1,200` | `Rent:` is a label and is not evaluated |
 | `$275 for the "Model 227"` | Text in double quotes is ignored |
 | `prev - 5% discount` | Unknown words are ignored, so prose is fine |
-| `sigmoyd(0)`, `989TFLOPZ` | Errors: an unknown word right before `(` or stuck to a number is taken for a misspelt function or unit, not ignored |
+| `sigmoyd(0)`, `989TFLOPZ` | Errors: an unknown word right before `(` is taken for a misspelt function, and a word stuck to a number that is one letter off a unit for a misspelt unit ("did you mean TFLOPS?"). Other words, as in `2pcs` or `1080p`, are ignored as before |
 | `1 m 20 cm = 120 cm` | Anything after a top-level `=` is ignored, so you can paste annotated examples |
 
 A colon between digits (`2:30`) is a time, not a label.
@@ -324,7 +324,8 @@ Rough numbers for models: memory, compute, time and cost. The sample sheet
 `params` or `tokens`.
 
 Parameters, tokens and FLOP are counts with no dimension, so they combine
-the way rough estimates do:
+the way rough estimates do. Different kinds of count do not add up or
+convert into each other: `3 tokens + 2 params` is an error.
 
 ```text
 70B params * bf16 in GB                     → 140 GB

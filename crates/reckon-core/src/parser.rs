@@ -58,9 +58,10 @@ pub enum Item {
     /// A currency sign such as `$` (prefix or postfix).
     CurSym(Unit),
     Scale(f64),
-    /// A word stuck to a number that is not a unit (`12xyz`). An error, so
-    /// that a mistyped unit does not quietly give the bare number.
-    Unknown(String),
+    /// A word stuck to a number that is one slip from a unit (`12kgz`): the
+    /// word and the unit it is probably meant to be. An error, so that a
+    /// mistyped unit does not quietly give the bare number.
+    Unknown(String, String),
     Func(String),
     Var(String),
     Const(f64),
@@ -427,10 +428,12 @@ pub fn classify(toks: &[Token], cx: &ClassifyCtx) -> Vec<It> {
                 } else if next_glued('(') && w.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     // `sigmoid(0)` with no such function is an error, not 0.
                     Some(Item::Func(lw.clone()))
-                } else if glued_to_num && !matches!(lw.as_str(), "st" | "nd" | "rd" | "th" | "x") {
-                    Some(Item::Unknown(w.clone()))
                 } else {
-                    None
+                    // A near-miss of a unit stuck to a number: `989TFLOPZ`.
+                    glued_to_num
+                        .then(|| cx.reg.near_miss(w))
+                        .flatten()
+                        .map(|unit| Item::Unknown(w.clone(), unit))
                 };
                 if let Some(item) = item {
                     push(&mut out, item, span.end);
@@ -474,7 +477,7 @@ pub fn highlight_class(item: &Item) -> Hl {
         Item::Num(..) | Item::Time(..) | Item::Date(..) | Item::Const(_) | Item::Scale(_) => {
             Hl::Number
         }
-        Item::Unit(_) | Item::CurSym(_) | Item::Zone(_) | Item::Month(_) | Item::Unknown(_) => {
+        Item::Unit(_) | Item::CurSym(_) | Item::Zone(_) | Item::Month(_) | Item::Unknown(..) => {
             Hl::Unit
         }
         Item::Kw(_) => Hl::Keyword,
@@ -634,7 +637,7 @@ impl<'a> Parser<'a> {
     fn finish(&self) -> Result<(), String> {
         match self.peek() {
             None | Some(Item::Sym('=')) => Ok(()),
-            Some(Item::Unknown(w)) => Err(format!("unknown unit {w}")),
+            Some(Item::Unknown(w, unit)) => Err(format!("unknown unit {w}; did you mean {unit}?")),
             Some(other) => Err(format!("unexpected {other:?}")),
         }
     }
@@ -1079,7 +1082,9 @@ impl<'a> Parser<'a> {
                 let y = self.take_year();
                 Expr::DateLit(y, m, d as u32)
             }
-            Item::Unknown(w) => return Err(format!("unknown unit {w}")),
+            Item::Unknown(w, unit) => {
+                return Err(format!("unknown unit {w}; did you mean {unit}?"))
+            }
             other => return Err(format!("unexpected {other:?}")),
         })
     }

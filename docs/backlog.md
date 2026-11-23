@@ -36,7 +36,7 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Units for AI work.** Parameters, tokens and FLOP as counts, FLOPS as a rate, `70B params`, `2T tokens`, and number formats (`bf16`, `fp8`, `int4`, …) in bytes.
 - [x] **Functions.** `sigmoid`, `logit`, `softmax`, `logsumexp`, `log2`, `perplexity`.
 - [x] **Evaluation statistics.** `accuracy_ci` (Wilson), `mcnemar`, `paired_ci`, `items_needed`, `holm`; checked against R.
-- [x] **Errors instead of silence.** An unknown function call, or an unknown word stuck to a number, is an error rather than a quietly wrong number.
+- [x] **Errors instead of silence.** An unknown function call, or a near-miss of a unit stuck to a number (`989TFLOPZ`, "did you mean TFLOPS?"), is an error rather than a quietly wrong number. Other prose works as before.
 - [x] **Sample sheet "AI and GPU math".** Model memory, KV cache, training compute and days, serving cost, an API bill and a model comparison.
 
 ## Next, if wanted

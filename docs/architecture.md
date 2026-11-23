@@ -102,6 +102,8 @@ vector, told apart by `UnitCtx::count_kind`. Two rules make rough estimates
 read naturally. In a product or quotient (`UnitCtx::tidy`), counts of one
 kind are put in one unit so they cancel (`tok/Mtok`), and a result with no
 dimension becomes a plain number unless it is a single count (`tokens`).
+Two units made only of counts are compatible only when they count the same
+things (`UnitCtx::compatible`), so tokens and parameters never add.
 When a value is shown (`UnitCtx::shown`), counts multiplied into a real
 quantity fold into its number, so `params × bf16` shows as bytes while the
 value keeps the parameters to cancel later. Converting a plain number to a
@@ -111,8 +113,12 @@ are built-in global values in bytes, which a sheet's own variables shadow.
 
 Classification treats `B`/`T` before `params` or `tokens` as billions and
 trillions. An unknown word stuck to an opening parenthesis becomes a call
-(so `sigmoyd(0)` fails as an unknown function), and one stuck to a number
-becomes `Item::Unknown` (an "unknown unit" error), except ordinals and `x`.
+(so `sigmoyd(0)` fails as an unknown function). A word stuck to a number
+becomes `Item::Unknown`, an "unknown unit" error with a suggestion, only when
+`Registry::near_miss` finds a unit one slip away (a changed letter, two
+swapped, or one added or missing in longer words) and the word has four
+letters or more. Everything else is ignored as before; a regression test
+holds everyday notes to their earlier results.
 
 ## Time and time zones
 

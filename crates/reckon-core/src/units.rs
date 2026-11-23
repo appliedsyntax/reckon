@@ -139,6 +139,35 @@ const SI: &[(&str, &str, f64)] = &[
     ("p", "pico", 1e-12),
     ("f", "femto", 1e-15),
 ];
+/// Whether `a` becomes `b` with one slip: a changed letter, two neighbours
+/// swapped, or, when both are five letters or more, one added or missing.
+fn one_slip(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a == b {
+        return false;
+    }
+    if a.len() == b.len() {
+        let diff: Vec<usize> = (0..a.len()).filter(|i| a[*i] != b[*i]).collect();
+        return match diff.as_slice() {
+            [_] => true,
+            [i, j] => *j == i + 1 && a[*i] == b[*j] && a[*j] == b[*i],
+            _ => false,
+        };
+    }
+    let (short, long) = if a.len() < b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if long.len() != short.len() + 1 || short.len() < 5 {
+        return false;
+    }
+    let i = (0..short.len())
+        .find(|i| short[*i] != long[*i])
+        .unwrap_or(short.len());
+    short[i..] == long[i + 1..]
+}
+
 const BIG: &[&str] = &["Y", "Z", "E", "P", "T", "G", "M", "k"];
 const SMALL: &[&str] = &["m", "µ", "n", "p", "f"];
 const BINARY: &[(&str, &str, i32)] = &[
@@ -181,6 +210,28 @@ impl Registry {
             r.ensure_currency(c.code);
         }
         r
+    }
+
+    /// A unit one slip away from `w`: one letter changed, or two swapped,
+    /// or (for words of five letters or more) one added or missing. Words
+    /// shorter than four letters are never near-misses, so `2pcs` and
+    /// `1080p` stay ordinary words.
+    pub fn near_miss(&self, w: &str) -> Option<String> {
+        if w.chars().count() < 4 {
+            return None;
+        }
+        let lw = w.to_lowercase();
+        let mut found: Vec<&String> = self
+            .exact
+            .keys()
+            .filter(|k| one_slip(w, k))
+            .chain(self.folded.keys().filter(|k| one_slip(&lw, k)))
+            .filter(|k| !k.contains(' '))
+            .collect();
+        // A changed letter before an added or missing one, then the shortest.
+        let n = w.chars().count();
+        found.sort_by_key(|k| (k.chars().count().abs_diff(n), k.len(), k.as_str()));
+        found.first().map(|k| k.to_string())
     }
 
     pub fn def(&self, id: UnitId) -> &UnitDef {
@@ -923,8 +974,32 @@ impl UnitCtx<'_> {
         !u.is_none() && u.parts.iter().all(|(id, _)| self.count_kind(*id).is_some())
     }
 
+    /// Whether values in these units can be added or converted. Units made
+    /// only of counts must also count the same things: 3 tokens and 2
+    /// parameters do not add up. A plain number goes with any count.
     pub fn compatible(&self, a: &Unit, b: &Unit) -> bool {
-        self.dims(a) == self.dims(b)
+        if self.dims(a) != self.dims(b) {
+            return false;
+        }
+        !(self.is_count(a) && self.is_count(b)) || self.counted(a) == self.counted(b)
+    }
+
+    /// The kinds of count in a unit and their powers: `tok/param` gives
+    /// tok¹ param⁻¹.
+    fn counted(&self, u: &Unit) -> Vec<(&'static str, i8)> {
+        let mut kinds: Vec<(&'static str, i8)> = Vec::new();
+        for (id, p) in &u.parts {
+            let Some(k) = self.count_kind(*id) else {
+                continue;
+            };
+            match kinds.iter_mut().find(|e| e.0 == k) {
+                Some(e) => e.1 += p,
+                None => kinds.push((k, *p)),
+            }
+        }
+        kinds.retain(|e| e.1 != 0);
+        kinds.sort();
+        kinds
     }
 
     pub fn convert(&self, v: f64, from: &Unit, to: &Unit) -> Result<f64, String> {
