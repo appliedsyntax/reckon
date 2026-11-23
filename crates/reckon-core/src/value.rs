@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::time::{civil_from_days, split, MONTHS, WEEKDAYS};
 use crate::tz::Zone;
-use crate::units::{Conv, Unit, UnitCtx};
+use crate::units::{Conv, Unit, UnitCtx, UnitId};
 
 /// Output number format chosen with `in hex`, `in sci`, ...
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -274,23 +274,33 @@ fn format_quantity(q: &Quantity, ucx: &UnitCtx, s: &Settings) -> String {
         unit,
         fmt: q.fmt,
     };
-    let money = q
-        .unit
-        .as_simple()
-        .is_some_and(|id| matches!(ucx.reg.def(id).conv, Conv::Currency(_)));
+    let is_money = |id: UnitId| matches!(ucx.reg.def(id).conv, Conv::Currency(_));
+    let money = q.unit.as_simple().is_some_and(is_money);
+    // Money per something is written as money: $0.46/Mtok, ₹37.04/h.
+    if q.fmt == NumFmt::Auto && !money {
+        let mut cur = q.unit.parts.iter().filter(|(id, _)| is_money(*id));
+        if let (Some(&(c, 1)), None) = (cur.next(), cur.next()) {
+            let rest: Vec<(UnitId, i8)> =
+                q.unit.parts.iter().filter(|p| p.0 != c).copied().collect();
+            if rest.iter().all(|(_, p)| *p < 0) {
+                let per = Unit::normalized(rest.into_iter().map(|(id, p)| (id, -p)).collect());
+                let amount = Quantity {
+                    v: q.v,
+                    unit: Unit::simple(c),
+                    fmt: q.fmt,
+                };
+                return format!(
+                    "{}/{}",
+                    format_quantity(&amount, ucx, s),
+                    ucx.label(&per, false)
+                );
+            }
+        }
+    }
     let num = match q.fmt {
         NumFmt::Hex | NumFmt::Bin | NumFmt::Oct => format_radix(q.v, q.fmt),
         NumFmt::Sci => format_sci(q.v, s.precision),
-        NumFmt::Auto if money => {
-            let rounded = (q.v * 10f64.powi(s.currency_precision as i32)).round();
-            if rounded % 10f64.powi(s.currency_precision as i32) == 0.0 && q.v.abs() < 1e15 {
-                format_number(q.v, 0, s)
-            } else {
-                // Keep trailing zeros for money: 27.60, not 27.6
-                let n = format_number(q.v, s.currency_precision, s);
-                pad_decimals(&n, s.currency_precision, s.decimal_sep)
-            }
-        }
+        NumFmt::Auto if money => format_money(q.v, s),
         NumFmt::Auto => format_number(q.v, s.precision, s),
     };
     if q.unit.is_none() {
@@ -311,6 +321,30 @@ fn format_quantity(q: &Quantity, ucx: &UnitCtx, s: &Settings) -> String {
         }
     }
     format!("{num} {label}")
+}
+
+/// A money amount: whole when it is whole ($20), otherwise to the cent with
+/// trailing zeros kept ($27.60). Amounts under ten cents get three
+/// significant digits instead, since a cent can be most of them: a request
+/// that costs 0.6¢ shows as $0.006, not $0.01.
+fn format_money(v: f64, s: &Settings) -> String {
+    let p = s.currency_precision as i32;
+    if v != 0.0 && v.abs() < 10f64.powi(1 - p) {
+        let places = (2 - v.abs().log10().floor() as i32).max(p);
+        if places > 15 {
+            return format_sci(v, 2);
+        }
+        let n = format_number(v, places as usize, s);
+        return pad_decimals(&n, p as usize, s.decimal_sep);
+    }
+    let rounded = (v * 10f64.powi(p)).round();
+    if rounded % 10f64.powi(p) == 0.0 && v.abs() < 1e15 {
+        format_number(v, 0, s)
+    } else {
+        // Keep trailing zeros for money: 27.60, not 27.6
+        let n = format_number(v, s.currency_precision, s);
+        pad_decimals(&n, s.currency_precision, s.decimal_sep)
+    }
 }
 
 fn pad_decimals(n: &str, places: usize, dec: char) -> String {

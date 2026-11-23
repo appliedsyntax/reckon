@@ -89,7 +89,7 @@ impl Unit {
             _ => None,
         }
     }
-    fn normalized(mut parts: Vec<(UnitId, i8)>) -> Self {
+    pub(crate) fn normalized(mut parts: Vec<(UnitId, i8)>) -> Self {
         parts.sort_by_key(|p| p.0);
         let mut out: Vec<(UnitId, i8)> = Vec::new();
         for (id, p) in parts {
@@ -179,12 +179,53 @@ const BINARY: &[(&str, &str, i32)] = &[
     ("Ei", "exbi", 6),
 ];
 
+/// Unit names grouped for [`Registry::near_miss`]: by length and first
+/// letter, and by length and last letter. A name one slip from a word of
+/// four letters or more shares its first or its last letter with it, and
+/// differs in length by at most one, so only a handful of names need
+/// comparing instead of every name there is.
+#[derive(Default)]
+struct SlipIndex {
+    first: HashMap<(usize, char), Vec<String>>,
+    last: HashMap<(usize, char), Vec<String>>,
+}
+
+impl SlipIndex {
+    fn insert(&mut self, name: &str) {
+        let n = name.chars().count();
+        // Shorter names cannot be one slip from a word of four letters.
+        if n < 3 || name.contains(' ') {
+            return;
+        }
+        let (Some(f), Some(l)) = (name.chars().next(), name.chars().last()) else {
+            return;
+        };
+        self.first.entry((n, f)).or_default().push(name.to_string());
+        self.last.entry((n, l)).or_default().push(name.to_string());
+    }
+
+    /// Names that may be one slip from `w`.
+    fn candidates<'a>(&'a self, w: &str) -> impl Iterator<Item = &'a String> + 'a {
+        let n = w.chars().count();
+        let f = w.chars().next().unwrap_or(' ');
+        let l = w.chars().last().unwrap_or(' ');
+        (n.saturating_sub(1)..=n + 1).flat_map(move |len| {
+            let a = self.first.get(&(len, f)).into_iter().flatten();
+            let b = self.last.get(&(len, l)).into_iter().flatten();
+            a.chain(b)
+        })
+    }
+}
+
 pub struct Registry {
     defs: Vec<UnitDef>,
     /// Case-sensitive phrases (symbols like `m`, `MB`, `K`).
     exact: HashMap<String, UnitId>,
     /// Lower-cased phrases (names like `kilometers`).
     folded: HashMap<String, UnitId>,
+    /// The same phrases, grouped for finding near-misses.
+    exact_slips: SlipIndex,
+    folded_slips: SlipIndex,
     by_key: HashMap<String, UnitId>,
     /// Longest phrase in words, used by the multi-word matcher.
     pub max_words: usize,
@@ -202,6 +243,8 @@ impl Registry {
             defs: Vec::new(),
             exact: HashMap::new(),
             folded: HashMap::new(),
+            exact_slips: SlipIndex::default(),
+            folded_slips: SlipIndex::default(),
             by_key: HashMap::new(),
             max_words: 1,
         };
@@ -222,11 +265,14 @@ impl Registry {
         }
         let lw = w.to_lowercase();
         let mut found: Vec<&String> = self
-            .exact
-            .keys()
+            .exact_slips
+            .candidates(w)
             .filter(|k| one_slip(w, k))
-            .chain(self.folded.keys().filter(|k| one_slip(&lw, k)))
-            .filter(|k| !k.contains(' '))
+            .chain(
+                self.folded_slips
+                    .candidates(&lw)
+                    .filter(|k| one_slip(&lw, k)),
+            )
             .collect();
         // A changed letter before an added or missing one, then the shortest.
         let n = w.chars().count();
@@ -255,11 +301,18 @@ impl Registry {
         };
         for p in exact {
             self.max_words = self.max_words.max(p.split(' ').count());
-            self.exact.entry((*p).to_string()).or_insert(id);
+            if !self.exact.contains_key(*p) {
+                self.exact.insert((*p).to_string(), id);
+                self.exact_slips.insert(p);
+            }
         }
         for p in names {
             self.max_words = self.max_words.max(p.split(' ').count());
-            self.folded.entry(p.to_lowercase()).or_insert(id);
+            let lp = p.to_lowercase();
+            if !self.folded.contains_key(&lp) {
+                self.folded_slips.insert(&lp);
+                self.folded.insert(lp, id);
+            }
         }
         id
     }
@@ -1088,4 +1141,62 @@ pub fn superscript(n: i8) -> String {
             _ => '⁹',
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old search: every name there is.
+    fn near_miss_slowly(r: &Registry, w: &str) -> Option<String> {
+        if w.chars().count() < 4 {
+            return None;
+        }
+        let lw = w.to_lowercase();
+        let mut found: Vec<&String> = r
+            .exact
+            .keys()
+            .filter(|k| one_slip(w, k))
+            .chain(r.folded.keys().filter(|k| one_slip(&lw, k)))
+            .filter(|k| !k.contains(' '))
+            .collect();
+        let n = w.chars().count();
+        found.sort_by_key(|k| (k.chars().count().abs_diff(n), k.len(), k.as_str()));
+        found.first().map(|k| k.to_string())
+    }
+
+    #[test]
+    fn near_misses_are_found_as_a_full_search_finds_them() {
+        let r = Registry::new();
+        let mut words: Vec<String> = Vec::new();
+        for name in r.exact.keys().chain(r.folded.keys()) {
+            let c: Vec<char> = name.chars().collect();
+            if c.len() < 3 || name.contains(' ') {
+                continue;
+            }
+            // A changed letter at each end, two swapped, one added at each
+            // end and one dropped from each end.
+            let s = |v: Vec<char>| v.into_iter().collect::<String>();
+            let mut first = c.clone();
+            first[0] = 'q';
+            let mut last = c.clone();
+            *last.last_mut().unwrap() = 'z';
+            let mut swapped = c.clone();
+            swapped.swap(0, 1);
+            words.extend([
+                s(first),
+                s(last),
+                s(swapped),
+                format!("x{name}"),
+                format!("{name}x"),
+                s(c[1..].to_vec()),
+                s(c[..c.len() - 1].to_vec()),
+            ]);
+        }
+        words.extend(["TFLOPZ", "inchs", "hourz", "kids", "beers"].map(String::from));
+        assert!(words.len() > 1000);
+        for w in &words {
+            assert_eq!(r.near_miss(w), near_miss_slowly(&r, w), "{w}");
+        }
+    }
 }

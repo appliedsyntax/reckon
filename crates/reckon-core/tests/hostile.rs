@@ -319,3 +319,18 @@ fn model_evaluation_on_long_lists_stays_cheap() {
         let _ = last_result(f.to_string());
     }
 }
+
+#[test]
+fn many_words_stuck_to_numbers_stay_cheap() {
+    // Each is checked against the unit names for a near-miss, on every
+    // keystroke; a large sheet of them must not freeze the app.
+    let line: Vec<String> = (1..190).map(|i| format!("{i}abcde")).collect();
+    let sheet = format!("{}\n", line.join(" ")).repeat(300);
+    let started = Instant::now();
+    let _ = last_result(sheet);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}

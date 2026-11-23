@@ -420,7 +420,7 @@ fn units() {
         ("round(1 month in days)", "30 days"),
         ("1 year in days", "365 days"),
         ("90 min in hours", "1.5 h"),
-        ("$120 / 4 h", "30 USD/h"),
+        ("$120 / 4 h", "$30/h"),
     ]);
 }
 
@@ -567,7 +567,7 @@ fn machine_learning_units() {
             "1000 * (2000 tokens * $3/Mtok + 500 tokens * $15/Mtok)",
             "$13.50",
         ),
-        ("$2.50/h / (1500 tokens/s) in $/Mtok", "0.463 USD/Mtok"),
+        ("$2.50/h / (1500 tokens/s) in $/Mtok", "$0.46/Mtok"),
         (
             "3.35 TB/s / (70B params * bf16) in tokens/s",
             "23.9286 tok/s",
@@ -758,4 +758,33 @@ fn everyday_notes_are_unchanged() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn money_with_its_sign_and_small_amounts() {
+    check(&[
+        // Sign or code, typed either way, money per something shows the sign.
+        ("$5/h", "$5/h"),
+        ("5 USD/h", "$5/h"),
+        ("USD 5/h", "$5/h"),
+        ("₹200/h", "₹200/h"),
+        ("200 INR/h", "₹200/h"),
+        ("£2/kg", "£2/kg"),
+        ("2 GBP/kg", "£2/kg"),
+        ("₹200/h / (1500 tokens/s) in INR/Mtok", "₹37.04/Mtok"),
+        ("$5/kg/h", "$5/kg·h"),
+        // A currency with no sign keeps its code.
+        ("5 CHF/h", "5 CHF/h"),
+        // Under ten cents, three significant digits instead of cents.
+        ("2000 tokens * $3/Mtok", "$0.006"),
+        ("2000 tokens * $3/Mtok + 500 tokens * $15/Mtok", "$0.0135"),
+        ("$0.05", "$0.05"),
+        ("$0.075", "$0.075"),
+        ("$1 / 3", "$0.33"),
+        ("$0.1", "$0.10"),
+        ("$27.6", "$27.60"),
+        ("$20", "$20"),
+        ("[$0.004, $0.5, $2]", "[$0.004, $0.50, $2]"),
+        ("$1e-20", "$1e-20"),
+    ]);
 }

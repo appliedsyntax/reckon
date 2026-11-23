@@ -118,7 +118,13 @@ becomes `Item::Unknown`, an "unknown unit" error with a suggestion, only when
 `Registry::near_miss` finds a unit one slip away (a changed letter, two
 swapped, or one added or missing in longer words) and the word has four
 letters or more. Everything else is ignored as before; a regression test
-holds everyday notes to their earlier results.
+holds everyday notes to their earlier results. The check runs on every
+keystroke, so names are indexed by length and by first and last letter (a
+name one slip away shares one of them) and only a handful are compared.
+
+Money per something (`USD/h`, `INR/Mtok`) is written with the currency's
+sign, `$5/h`, and amounts under ten cents with three significant digits
+(`format_money` in `value.rs`).
 
 ## Time and time zones
 

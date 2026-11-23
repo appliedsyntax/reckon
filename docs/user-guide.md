@@ -81,7 +81,7 @@ $30 in Euro
 | Speed | mph, kph (km/h), knot/kn, or any compound such as `km/h` or `m/s` |
 
 Units multiply and divide: `2 m * 3 m` → `6 m²`, `10 km / 2 h` → `5 km/h`,
-`$120 / 4 h` → `30 USD/h`. SI prefixes are case-sensitive: `MB` is megabytes,
+`$120 / 4 h` → `$30/h`. SI prefixes are case-sensitive: `MB` is megabytes,
 `mb` is not recognised.
 
 ## Currency
@@ -90,6 +90,13 @@ Use ISO codes (`USD`, `EUR`, `JPY`, …), names (`dollars`, `euros`, `yen`,
 `rupees`, `bitcoin`) or signs (`$ € £ ¥ ₹ ₽ ₩ ₺ ₪ ฿ ₫ ₱ ₴ ₦ ₸ ₾ ₿`).
 `$30 CAD` means 30 Canadian dollars. In a sum of mixed currencies, the result
 is in the first value's currency: `$30 CAD + 5 USD - 7 EUR` → `25.64 CAD`.
+
+A sign and its code mean the same thing, so `$5/h` and `5 USD/h`, or
+`₹200/h` and `200 INR/h`, give the same result. Money is shown with its
+sign where it has one, also per something: `$5/h`, `₹37.04/Mtok`, `£2/kg`.
+Amounts are shown to the cent, except under ten cents, where a cent would
+be most of the amount: those get three significant digits, so a request
+costing 0.6¢ shows as `$0.006`.
 
 The app refreshes rates when they are more than 12 hours old, at start and
 while it stays open. The CLI
@@ -335,7 +342,7 @@ kv * 32768 tokens * 8 in GiB                → 80 GiB
 840 ZFLOP / (1024 * 989 TFLOPS * 40%) in days → 23.9999 days
 1500 tokens/s * 1 h in Mtok                 → 5.4 Mtok
 50M tokens * $3/Mtok                        → $150
-$2.50/h / (1500 tokens/s) in $/Mtok         → 0.463 USD/Mtok
+$2.50/h / (1500 tokens/s) in $/Mtok         → $0.46/Mtok
 ```
 
 A plain number converted to a count is taken as single units:
