@@ -39,6 +39,28 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Errors instead of silence.** An unknown function call, or a near-miss of a unit stuck to a number (`989TFLOPZ`, "did you mean TFLOPS?"), is an error rather than a quietly wrong number. Other prose works as before.
 - [x] **Sample sheet "AI and GPU math".** Model memory, KV cache, training compute and days, serving cost, an API bill and a model comparison.
 
+## Done on the bland-altman branch (not yet released)
+
+- [x] **Bland-Altman analysis.** `ba_bias`, `ba_limits` and the 95% confidence intervals of the bias and of each limit, checked against the peak flow data of the 1986 paper. Added to the "Method comparison" sample sheet. The plot comes with the charts below.
+
+## Done on the bland-altman branch: charts (not yet released)
+
+A chart is a result: written on the left as a function, drawn small on the right where the result goes. Desktop first. A mockup of the desktop window (Graphite theme) was approved on 23 November 2026; the open questions were settled on 23 November: all four charts, the line grows to hold its chart, and copy-as-image later.
+
+- [x] **Functions.** `scatter(x, y)` (points with the fitted line, and the line where both methods agree), `bland_altman(x, y)`, `bars(list)` and `line(list)`. No pie charts: hard to read small, and bars do the same job.
+- [x] **Room for the chart.** The line grows as tall as its chart (scatter and Bland-Altman three lines, bars two, line one), so nothing below is covered.
+- [x] **The small chart.** In the results column, theme colours, no axes or legends; a scatter shows its slope in a corner, Bland-Altman its bias. It redraws as the lines above change.
+- [x] **On the small chart.** Hover shows the smallest and largest value. A click opens the larger view.
+- [x] **The larger view.** A panel over the sheet, two-thirds of the window, with axes, titles, the fit's name and the value under the pointer. Esc or a click closes it.
+- [x] **One chart, drawn everywhere.** The engine works out the chart; the desktop draws it small and large from the same code; elsewhere its summary is the result.
+- [x] **Phones and the command line.** A text summary ("30 points, slope 1.026").
+
+Next for charts:
+
+- [ ] **Copy the chart as an image** from the larger view. (M)
+- [ ] **SVG output on the command line**, from the same chart data (the parked "Chart output" item). (S)
+- [ ] **Charts drawn on the phones.** (M each)
+
 ## Next, if wanted
 
 - [ ] **Check against mcr.** Compare Passing-Bablok and Deming with the R package mcr, the usual reference in clinical chemistry, on its example data. (S)
@@ -55,12 +77,9 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 
 - [ ] **Weighted Deming.** For measurement error that grows with the value. Iterative and harder to validate. (M)
 - [ ] **Linearity test for Passing-Bablok.** The cusum test from the original paper. (S)
-- [ ] **Bland-Altman analysis.** Mean difference (bias) and limits of agreement between two methods, with their confidence intervals. (S)
 - [ ] **Confusion matrix measures.** From true and predicted labels: sensitivity, specificity, F1, positive and negative percent agreement (PPA, NPA) and overall agreement. Cohen's kappa is a likely addition but was not asked for. (S)
 - [ ] **Logistic regression.** Fit a yes/no outcome against one or more inputs, then report the confusion matrix measures at a chosen cut-off. (L)
-- [ ] **Chart output.** An SVG of a scatter plot with the fitted line, and of a Bland-Altman plot, saved to a file by the command-line tool. (M)
 
 ## Not planned
 
-- **Charts inside the apps.** Each platform draws differently, so this is three pieces of work for a feature few users of a calculator need.
 - **A general statistics package in the style of Wolfram Alpha.** Too broad for a calculator. New methods are added one at a time when someone asks for them.

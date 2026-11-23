@@ -81,7 +81,7 @@ fn map_num(v: Value, f: impl Fn(f64) -> f64) -> R {
     match v {
         Value::Num(q) => Ok(Value::Num(Quantity { v: f(q.v), ..q })),
         Value::Percent(p) => Ok(Value::Percent(f(p))),
-        Value::Time(_) | Value::List(_) => Err("expected a number".into()),
+        Value::Time(_) | Value::List(_) | Value::Chart(_) => Err("expected a number".into()),
     }
 }
 
@@ -714,6 +714,7 @@ impl<'a> Eval<'a> {
             | "ba_limits"
             | "ba_lower_ci"
             | "ba_upper_ci" => return self.compare(name, &vals),
+            "scatter" | "bland_altman" | "bars" | "line" => return self.chart(name, args, &vals),
             "softmax" | "logsumexp" | "accuracy_ci" | "mcnemar" | "paired_ci" | "items_needed"
             | "holm" => return self.evaluation(name, &vals),
             _ => {}
@@ -1301,5 +1302,108 @@ impl<'a> Eval<'a> {
                 Ok(Value::num(stats::items_needed(rate(p)?, rate(m)?)))
             }
         }
+    }
+
+    /// Charts: `scatter(x, y)`, `bland_altman(x, y)`, `bars(list)` and
+    /// `line(list)`. A list passed by name gives the axis its title.
+    fn chart(&mut self, name: &str, args: &[Expr], vals: &[Value]) -> R {
+        use crate::chart::{self, ChartKind};
+        let named = |i: usize, or: &str| match args.get(i) {
+            Some(Expr::Var(n)) => n.clone(),
+            _ => or.to_string(),
+        };
+        let ucx = self.ucx();
+        let unit_label = |l: &List| {
+            if l.percent {
+                "%".to_string()
+            } else if l.unit.is_none() {
+                String::new()
+            } else {
+                ucx.label(&l.unit, false)
+            }
+        };
+        let made = match name {
+            "bars" | "line" => {
+                let list = self.gather(vals, true)?;
+                if list.v.is_empty() {
+                    return Err(format!("{name} needs values: {name}(list)"));
+                }
+                self.charge(list.v.len())?;
+                let title = if args.len() == 1 {
+                    named(0, "")
+                } else {
+                    String::new()
+                };
+                let kind = if name == "bars" {
+                    ChartKind::Bars
+                } else {
+                    ChartKind::Line
+                };
+                chart::series(kind, &list.v, &title, &unit_label(&list))
+            }
+            _ => {
+                let (Some(Value::List(x)), Some(Value::List(y)), 2) =
+                    (vals.first(), vals.get(1), vals.len())
+                else {
+                    return Err(format!("{name} needs two lists: {name}(x, y)"));
+                };
+                let n = x.v.len();
+                if y.v.len() != n {
+                    return Err("the two lists must hold the same number of values".into());
+                }
+                if n < 2 {
+                    return Err(format!("{name} needs at least two points"));
+                }
+                // The same kind of quantity, as in a method comparison: the
+                // same dimension, or plain numbers whose ranges overlap.
+                let range = |v: &[f64]| {
+                    v.iter()
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), a| {
+                            (l.min(*a), h.max(*a))
+                        })
+                };
+                let ((x0, x1), (y0, y1)) = (range(&x.v), range(&y.v));
+                let overlap = x0.max(y0) <= x1.min(y1);
+                let same = x.percent == y.percent
+                    && if x.unit.is_none() || y.unit.is_none() {
+                        overlap
+                    } else {
+                        ucx.compatible(&x.unit, &y.unit)
+                    };
+                // y in x's unit when they measure the same thing.
+                let yv: Vec<f64> =
+                    if same && !x.unit.is_none() && !y.unit.is_none() && x.unit != y.unit {
+                        y.v.iter()
+                            .map(|v| ucx.convert(*v, &y.unit, &x.unit))
+                            .collect::<Result<_, _>>()?
+                    } else {
+                        y.v.clone()
+                    };
+                let (xn, yn) = (named(0, "x"), named(1, "y"));
+                let xu = unit_label(x);
+                let yu = if same && !x.unit.is_none() {
+                    xu.clone()
+                } else {
+                    unit_label(y)
+                };
+                if name == "scatter" {
+                    self.charge(if same { n * (n - 1) / 2 } else { n })?;
+                    chart::scatter(&x.v, &yv, (&xn, &yn), (&xu, &yu), same)
+                } else {
+                    if !same && !(x.unit.is_none() && y.unit.is_none()) {
+                        return Err("both lists need the same kind of unit".into());
+                    }
+                    self.charge(n)?;
+                    let unit = if xu.is_empty() {
+                        yu.clone()
+                    } else {
+                        xu.clone()
+                    };
+                    chart::bland_altman(&x.v, &yv, (&xn, &yn), &unit)
+                        .ok_or_else(|| format!("{name} needs at least two points"))?
+                }
+            }
+        };
+        Ok(Value::Chart(Arc::new(made)))
     }
 }

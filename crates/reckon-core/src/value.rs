@@ -73,6 +73,8 @@ pub enum Value {
     /// Shared, so that copying a list into a variable or a result costs
     /// nothing however long it is.
     List(Arc<List>),
+    /// A chart to draw (see `chart.rs`); its summary where it cannot be.
+    Chart(Arc<crate::chart::Chart>),
 }
 
 impl Value {
@@ -96,7 +98,7 @@ impl Value {
             Value::Num(q) => Some(q.v),
             Value::Percent(p) => Some(*p),
             Value::Time(t) => Some(t.utc),
-            Value::List(_) => None,
+            Value::List(_) | Value::Chart(_) => None,
         }
     }
 }
@@ -215,6 +217,7 @@ pub fn format_value(v: &Value, ucx: &UnitCtx, s: &Settings) -> String {
         Value::Time(t) => format_datetime(t, s),
         Value::Num(q) => format_quantity(q, ucx, s),
         Value::List(l) => format_list(l, ucx, s, LIST_WIDTH),
+        Value::Chart(c) => c.summary.clone(),
     }
 }
 

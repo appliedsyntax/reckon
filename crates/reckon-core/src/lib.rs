@@ -10,6 +10,7 @@
 //! The engine evaluates whole documents: every line can see variables,
 //! `prev`, `sum` and `avg` from the lines above it.
 
+pub mod chart;
 pub mod currency;
 pub mod eval;
 pub mod json;
@@ -487,8 +488,8 @@ impl Engine {
                 };
                 out.text = Some(format_value(&v, &ucx, &self.settings));
                 st.prev = Some(v.clone());
-                // A list is not one of the numbers `sum` adds up.
-                if !aggregate && !matches!(v, Value::List(_)) {
+                // A list or a chart is not one of the numbers `sum` adds up.
+                if !aggregate && !matches!(v, Value::List(_) | Value::Chart(_)) {
                     st.block.push(v.clone());
                 }
                 out.value = Some(v);

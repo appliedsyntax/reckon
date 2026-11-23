@@ -845,3 +845,66 @@ new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 18
         .collect();
     check(&cases);
 }
+
+#[test]
+fn charts_as_results() {
+    let data = "\
+ref = [398.8, 183.6, 88.2, 74, 140.9, 332, 173.2, 397.8, 99.7, 218.6, 111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9, 270.6, 159, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7]
+new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167, 290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223, 395.7, 168]
+";
+    let with = |lines: &str, last: &str| format!("{lines}{last}");
+    let no = |e: &str| format!("<no result: Some({e:?})>");
+    // Where a chart cannot be drawn, its summary is the result. The same
+    // kind of quantity gets Passing-Bablok (1.026); different kinds least
+    // squares (55 km/h, written without its unit).
+    let cases = [
+        (
+            with(data, "scatter(ref, new)"),
+            "30 points, slope 1.026".to_string(),
+        ),
+        (
+            with(data, "bland_altman(ref, new)"),
+            "30 points, bias 10.05".into(),
+        ),
+        (with(data, "bars(ref)"), "30 bars, 53.7 to 398.8".into()),
+        (with(data, "line(3, 1, 2)"), "3 points, 1 to 3".into()),
+        (
+            with("", "scatter([1 h, 2 h, 3 h], [50 km, 100 km, 160 km])"),
+            "3 points, slope 55".into(),
+        ),
+        (with("", "c = bars(1, 2)\nc"), "2 bars, 1 to 2".into()),
+        // A chart is not a number.
+        (
+            with(data, "scatter(ref, new) + 1"),
+            no("cannot combine these values"),
+        ),
+        (
+            with("", "scatter([1, 2], [3])"),
+            no("the two lists must hold the same number of values"),
+        ),
+        (
+            with("", "scatter([1], [3])"),
+            no("scatter needs at least two points"),
+        ),
+        (
+            with("", "scatter([1, 2, 3])"),
+            no("scatter needs two lists: scatter(x, y)"),
+        ),
+        (
+            with("", "bland_altman([1 h, 2 h], [50 km, 90 km])"),
+            no("both lists need the same kind of unit"),
+        ),
+        (with("", "bars([])"), no("bars needs values: bars(list)")),
+        // Only `line(` and `bars(` are charts; otherwise the words mean what
+        // they did before (`line` is also a unit of length).
+        (with("", "line 3 bars 4"), "12 lines".into()),
+        (with("", "3 bars 4"), "12".into()),
+    ];
+    let cases: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    check(&cases);
+    // A chart does not count toward `sum`.
+    assert_eq!(eval("4\n6\nline(1, 2)\nsum"), "10");
+}

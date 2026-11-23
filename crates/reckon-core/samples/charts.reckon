@@ -1,0 +1,19 @@
+# Charts
+// A chart is a result: write it as a function and it is drawn small on the
+// right. Click a chart to see it large, with its axes and values.
+
+reference = [398.8, 183.6, 88.2, 74, 140.9, 332, 173.2, 397.8, 99.7, 218.6, 111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9, 270.6, 159, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7]
+new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167, 290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223, 395.7, 168]
+
+# Comparing two methods
+// Each sample against both methods, with the fitted line and the dashed
+// line where the methods agree.
+scatter(reference, new)
+// The differences against their average, with the bias and the limits of
+// agreement.
+bland_altman(reference, new)
+
+# Values in order
+sales = [12, 15, 11, 18, 21, 19, 24, 27]
+bars(sales)
+line(sales)

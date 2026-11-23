@@ -66,6 +66,21 @@ text ─► prepare ─► lexer ─► classify ─► parser ─► eval ─�
 `DocState` carries variables, `prev`, the current `sum` block and the
 `ppi`/`em` values from line to line.
 
+## Charts
+
+`chart.rs` turns `scatter`, `bland_altman`, `bars` and `line` into a
+`Value::Chart`: the points, guide lines (the fit, the line of agreement,
+the bias and limits), axis titles, a title for the larger view, a corner
+note and a text summary. The engine decides what to draw; the desktop's
+`chartdraw.rs` draws it, small in the results column or large in the chart
+panel, from the same code. Where nothing is drawn (phones, command line)
+the summary is the text result.
+
+In the editor, `Wraps::place` gives each visual line a vertical place:
+a row with a chart is as tall as the chart (`ChartKind::rows`), so it never
+covers the rows below. Click positions, the cursor band, scrolling and the
+input method all go through those places.
+
 ## Importing tables
 
 `table.rs` turns rows of cell text into sheet lines: a heading, a note on

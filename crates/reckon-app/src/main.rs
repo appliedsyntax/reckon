@@ -5,6 +5,7 @@
 
 mod assets;
 mod calc;
+mod chartdraw;
 mod conf;
 mod hotkey;
 mod input;
@@ -81,6 +82,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", PickerDown, Some("ThemePicker")),
         KeyBinding::new("enter", PickerConfirm, Some("ThemePicker")),
         KeyBinding::new("escape", PickerCancel, Some("ThemePicker")),
+        KeyBinding::new("escape", CloseChart, Some("ChartView")),
     ];
     if mac {
         b.extend([

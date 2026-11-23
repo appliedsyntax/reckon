@@ -280,6 +280,39 @@ An interval is a list of two values, lower first. For Passing-Bablok and
 Deming, y is converted to x's unit, the slope has no unit, and the
 intercept is in x's unit.
 
+## Charts
+
+A chart is a result: write it as a function and the desktop app draws it
+small where the result goes. The line grows to hold it, three lines for a
+scatter or Bland-Altman plot, two for bars and one for a line chart, so it
+never covers the lines below. The sample sheet "Charts" shows all four.
+
+| Function | Chart |
+|---|---|
+| `scatter(x, y)` | y against x, with a fitted line |
+| `bland_altman(x, y)` | Each pair's difference (y − x) against its average, with the bias and the 95% limits of agreement |
+| `bars(list)` | Bars for the values in order |
+| `line(list)` | A line through the values in order |
+
+- **Scatter** fits Passing-Bablok and draws the dashed line where x and y
+  agree when both measure the same kind of quantity (the same unit kind,
+  or plain numbers whose ranges overlap), as in a method comparison.
+  Otherwise, or when Passing-Bablok cannot fit, it fits least squares.
+  Its slope shows in the chart's corner.
+- **Hover** over a small chart to see its smallest and largest value.
+  **Click** it to see it large, over the sheet, with axes, titles and the
+  value under the pointer ("sample 12: 135.5 → 180.7"), which finds
+  outliers. Esc or a click closes it.
+- Axis titles come from the lists' names: `scatter(reference, new)` labels
+  its axes "reference" and "new", with their units.
+- A chart is defined only by its line: there is no zooming, dragging or
+  restyling in the larger view.
+- The phone apps and the command line show a short summary instead, such
+  as `30 points, slope 1.026`.
+
+`line(` and `bars(` are charts only when written as a call, so notes that
+use the words are unchanged.
+
 ## Importing data
 
 Columns of numbers from a spreadsheet become lists, one per column, named

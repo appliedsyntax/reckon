@@ -96,6 +96,7 @@ actions!(
         PickerDown,
         PickerConfirm,
         PickerCancel,
+        CloseChart,
     ]
 );
 
@@ -233,6 +234,11 @@ struct Wraps {
     row_seg: Vec<usize>,
     /// Rows drawn folded onto one segment (see [`Fold`]).
     folds: std::collections::HashMap<usize, Fold>,
+    /// Vertical place of each segment, in line heights. Segments follow
+    /// one another, except that a row with a chart is as tall as its chart.
+    seg_slot: Vec<usize>,
+    /// The place just below each row (its chart included).
+    row_end: Vec<usize>,
 }
 
 /// A long list, such as imported data, drawn on one line while the cursor
@@ -285,6 +291,42 @@ fn fold_line(line: &str, n: usize, mut fits: impl FnMut(&str) -> bool) -> Option
 impl Wraps {
     fn segs(&self) -> usize {
         self.seg_start.len()
+    }
+
+    /// Works out the vertical places, given how many lines each row's
+    /// chart needs (0 for none).
+    fn place(mut self, chart_rows: impl Fn(usize) -> usize) -> Self {
+        let (mut slot, rows) = (0, self.rows());
+        self.seg_slot = Vec::with_capacity(self.segs());
+        self.row_end = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let segs = self.row_segs(row);
+            for _ in segs.clone() {
+                self.seg_slot.push(slot);
+                slot += 1;
+            }
+            slot += chart_rows(row).saturating_sub(segs.len());
+            self.row_end.push(slot);
+        }
+        self
+    }
+
+    /// Height of the document, in line heights.
+    fn height(&self) -> usize {
+        self.row_end.last().copied().unwrap_or(0)
+    }
+
+    fn slot_of(&self, seg: usize) -> usize {
+        self.seg_slot.get(seg).copied().unwrap_or(seg)
+    }
+
+    /// The segment at a vertical place: below a row's text, within its
+    /// chart, that is the row's last segment.
+    fn seg_at(&self, slot: usize) -> usize {
+        self.seg_slot
+            .partition_point(|s| *s <= slot)
+            .saturating_sub(1)
+            .min(self.segs().saturating_sub(1))
     }
 
     fn rows(&self) -> usize {
@@ -356,6 +398,10 @@ pub struct Calc {
     doc_width: Pixels,
     /// Where each result was last drawn, and the row it belongs to.
     result_hits: Vec<(Bounds<Pixels>, usize)>,
+    /// Where each small chart was drawn last, and its row.
+    chart_hits: Vec<(Bounds<Pixels>, usize)>,
+    /// The chart shown large, over the sheet.
+    chart_view: Option<ChartView>,
     /// When exchange rates were last asked for.
     rates_tried: Option<Instant>,
     bounds: Option<Bounds<Pixels>>,
@@ -430,6 +476,8 @@ impl Calc {
             wrap_width: None,
             doc_width: px(0.),
             result_hits: Vec::new(),
+            chart_hits: Vec::new(),
+            chart_view: None,
             rates_tried: None,
             bounds: None,
             scroll: ScrollHandle::new(),
@@ -621,12 +669,20 @@ impl Calc {
             at += line.len() + 1;
         }
         row_seg.push(seg_start.len());
+        let outputs = &self.outputs;
         self.wraps = Wraps {
             key: Some(key),
             seg_start,
             row_seg,
             folds,
-        };
+            ..Default::default()
+        }
+        .place(
+            |row| match outputs.get(row).and_then(|o| o.value.as_ref()) {
+                Some(reckon_core::Value::Chart(c)) => c.kind.rows(),
+                _ => 0,
+            },
+        );
     }
 
     /// `offset` moved back to the start of the character it falls in.
@@ -847,7 +903,7 @@ impl Calc {
         let seg = if rel_y < px(0.) {
             0
         } else {
-            ((rel_y / self.line_h()) as usize).min(self.wraps.segs() - 1)
+            self.wraps.seg_at((rel_y / self.line_h()) as usize)
         };
         let col = self
             .layouts
@@ -1045,6 +1101,121 @@ impl Calc {
         if self.picker.take().is_some() {
             self.apply_choice(self.choice, cx);
         }
+    }
+
+    fn close_chart(&mut self, _: &CloseChart, _: &mut Window, cx: &mut Context<Self>) {
+        if self.chart_view.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The larger view of a chart: a panel over the sheet with axes and the
+    /// value under the pointer. Esc, or a click anywhere, closes it.
+    fn render_chart_view(
+        &self,
+        view: &ChartView,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let chart = view.chart.clone();
+        let hover = view.hover;
+        let theme = *theme;
+        let font = gpui::font(".SystemUIFont");
+        let hint = if cfg!(target_os = "macos") {
+            "esc or click to close"
+        } else {
+            "Esc or click to close"
+        };
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("chart-backdrop")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.bg.opacity(0.35))
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.chart_view = None;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("chart-view")
+                    .occlude()
+                    .w(relative(0.66))
+                    .h(relative(0.66))
+                    .min_w(px(360.))
+                    .min_h(px(260.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .p(px(18.))
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(10.))
+                    .shadow_lg()
+                    .font_family(".SystemUIFont")
+                    .text_size(px(13.))
+                    .line_height(px(20.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.chart_view = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.text)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(chart.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                                if let Some(v) = this.chart_view.as_mut() {
+                                    v.hover = Some(ev.position);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, window, cx| {
+                                        crate::chartdraw::draw(
+                                            &chart,
+                                            bounds,
+                                            &theme,
+                                            &font,
+                                            px(13.),
+                                            crate::chartdraw::Size::Large,
+                                            hover,
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                )
+                                .size_full(),
+                            ),
+                    )
+                    .child(div().text_size(px(11.)).text_color(theme.muted).child(hint)),
+            )
     }
 
     fn picker_cancel(&mut self, _: &PickerCancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -1679,6 +1850,20 @@ impl Calc {
 
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
+        // A click on a chart shows it large.
+        let chart = self.chart_hits.iter().find(|h| h.0.contains(&ev.position));
+        if let Some(row) = chart.map(|h| h.1) {
+            if let Some(reckon_core::Value::Chart(c)) =
+                self.outputs.get(row).and_then(|o| o.value.clone())
+            {
+                self.chart_view = Some(ChartView {
+                    chart: c,
+                    hover: None,
+                });
+                cx.notify();
+                return;
+            }
+        }
         // A click on a result copies it.
         let hit = self.result_hits.iter().find(|h| h.0.contains(&ev.position));
         if let Some(row) = hit.map(|h| h.1) {
@@ -1837,7 +2022,7 @@ impl EntityInputHandler for Calc {
         let in_seg = self.wraps.seg_range(seg, self.text.len());
         let layout = self.layouts.get(seg)?;
         let left = bounds.left() + self.pad_x();
-        let top = bounds.top() + self.pad_y() + self.line_h() * seg as f32;
+        let top = bounds.top() + self.pad_y() + self.line_h() * self.wraps.slot_of(seg) as f32;
         let x0 = left + layout.x_for_index(r.start.saturating_sub(in_seg.start));
         let x1 = left + layout.x_for_index(r.end.min(in_seg.end).saturating_sub(in_seg.start));
         Some(Bounds::from_corners(
@@ -1957,6 +2142,20 @@ fn backdrop(
     .size_full()
 }
 
+/// The larger view of a chart, and where the pointer is over it.
+struct ChartView {
+    chart: std::sync::Arc<reckon_core::chart::Chart>,
+    hover: Option<Point<Pixels>>,
+}
+
+/// A small chart as it will be drawn, in the results column of its row.
+struct ChartMark {
+    chart: std::sync::Arc<reckon_core::chart::Chart>,
+    bounds: Bounds<Pixels>,
+    hitbox: Hitbox,
+    row: usize,
+}
+
 /// A result as it will be drawn: right-aligned on the first visual line
 /// of its row.
 struct ResultMark {
@@ -1976,6 +2175,9 @@ struct Prepaint {
     quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     results: Vec<ResultMark>,
+    charts: Vec<ChartMark>,
+    /// Vertical place of each segment, in line heights (see [`Wraps`]).
+    slots: Vec<usize>,
     /// Top left of the first line of text.
     origin: Point<Pixels>,
     /// The part of the element text may be drawn in.
@@ -2101,7 +2303,7 @@ impl Element for EditorElement {
                     calc.set_doc_width(width);
                 }
                 calc.ensure_wraps(window);
-                let height = calc.pad_y() * 2. + calc.line_h() * calc.wraps.segs() as f32;
+                let height = calc.pad_y() * 2. + calc.line_h() * calc.wraps.height() as f32;
                 size(width.unwrap_or_default(), height)
             })
         });
@@ -2142,8 +2344,8 @@ impl Element for EditorElement {
         // costs no more to draw than a short one.
         let view = window.content_mask().bounds;
         let row_at = |y: Pixels, margin: isize| {
-            let seg = ((y - bounds.top() - pad_y) / line_h).floor() as isize + margin;
-            wraps.row_of_seg(seg.clamp(0, wraps.segs() as isize - 1) as usize)
+            let slot = ((y - bounds.top() - pad_y) / line_h).floor() as isize + margin;
+            wraps.row_of_seg(wraps.seg_at(slot.max(0) as usize))
         };
         let in_view = row_at(view.top(), -SHAPE_MARGIN)..=row_at(view.bottom(), SHAPE_MARGIN);
         let mut rows: Vec<usize> = in_view.clone().collect();
@@ -2158,7 +2360,8 @@ impl Element for EditorElement {
         rows.dedup();
 
         let origin = point(bounds.left() + pad_x, bounds.top() + pad_y);
-        let seg_top = |seg: usize| origin.y + line_h * seg as f32;
+        let seg_top = |seg: usize| origin.y + line_h * wraps.slot_of(seg) as f32;
+        let row_bottom = |row: usize| origin.y + line_h * wraps.row_end[row] as f32;
         // Results sit against the right edge; text stops a gap before them.
         let results_clip = Bounds::from_corners(
             point(bounds.right() - calc.results_w(), bounds.top()),
@@ -2171,6 +2374,7 @@ impl Element for EditorElement {
 
         let mut lines = vec![ShapedLine::default(); wraps.segs()];
         let mut results = Vec::new();
+        let mut charts = Vec::new();
         // Results are in a fixed-width font: the width of one character.
         let digit_w = window
             .text_system()
@@ -2228,6 +2432,20 @@ impl Element for EditorElement {
                 continue;
             }
             let top = seg_top(wraps.row_seg[row]);
+            // A chart is drawn where the result goes, as tall as its row.
+            if let Some(reckon_core::Value::Chart(c)) = output.and_then(|o| o.value.as_ref()) {
+                let b = Bounds::from_corners(
+                    point(results_clip.left(), top + px(3.)),
+                    point(results_clip.right(), row_bottom(row) - px(3.)),
+                );
+                charts.push(ChartMark {
+                    chart: c.clone(),
+                    bounds: b,
+                    hitbox: window.insert_hitbox(b, HitboxBehavior::Normal),
+                    row,
+                });
+                continue;
+            }
             // A list gets the room its line leaves, not just the column.
             let mut clip_left = results_clip.left();
             let text = match output.and_then(|o| o.value.as_ref()) {
@@ -2271,7 +2489,7 @@ impl Element for EditorElement {
             quads.push(fill(
                 Bounds::from_corners(
                     point(bounds.left(), seg_top(segs.start)),
-                    point(bounds.right(), seg_top(segs.end)),
+                    point(bounds.right(), row_bottom(cur_row)),
                 ),
                 theme.active_line,
             ));
@@ -2327,6 +2545,8 @@ impl Element for EditorElement {
             quads,
             cursor: Some(fill(cursor_bounds, theme.cursor)),
             results,
+            charts,
+            slots: wraps.seg_slot.clone(),
             origin,
             text_clip,
         }
@@ -2348,7 +2568,7 @@ impl Element for EditorElement {
         let (line_h, font_size) = (calc.line_h(), calc.font_px());
         let font = window.text_style().font();
         // While a panel is open, typing must not edit the document.
-        if calc.picker.is_none() && calc.settings.is_none() {
+        if calc.picker.is_none() && calc.settings.is_none() && calc.chart_view.is_none() {
             window.handle_input(
                 &focus,
                 ElementInputHandler::new(bounds, self.calc.clone()),
@@ -2365,7 +2585,7 @@ impl Element for EditorElement {
             }),
             |window| {
                 for (seg, line) in pre.lines.iter().enumerate().filter(|(_, l)| l.len() > 0) {
-                    let at = point(origin.x, origin.y + line_h * seg as f32);
+                    let at = point(origin.x, origin.y + line_h * pre.slots[seg] as f32);
                     line.paint(at, line_h, window, cx).ok();
                 }
             },
@@ -2388,7 +2608,29 @@ impl Element for EditorElement {
                 window.set_cursor_style(CursorStyle::PointingHand, &r.hitbox);
             });
         }
-        let hitboxes: Vec<Hitbox> = pre.results.iter().map(|r| r.hitbox.clone()).collect();
+        // Small charts: a click opens the larger view.
+        for c in &pre.charts {
+            let hover = c.hitbox.is_hovered(window).then(|| window.mouse_position());
+            crate::chartdraw::draw(
+                &c.chart,
+                c.bounds,
+                &theme,
+                &font,
+                font_size,
+                crate::chartdraw::Size::Small,
+                hover,
+                window,
+                cx,
+            );
+            window.set_cursor_style(CursorStyle::PointingHand, &c.hitbox);
+        }
+        let hitboxes: Vec<Hitbox> = pre
+            .results
+            .iter()
+            .map(|r| r.hitbox.clone())
+            .chain(pre.charts.iter().map(|c| c.hitbox.clone()))
+            .collect();
+        let hovered = hitboxes.iter().position(|h| h.is_hovered(window));
         window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
             let now = hitboxes.iter().position(|h| h.is_hovered(window));
             if phase == DispatchPhase::Bubble && now != hovered {
@@ -2407,9 +2649,11 @@ impl Element for EditorElement {
             .iter()
             .map(|r| (r.hitbox.bounds, r.row))
             .collect();
+        let charts = pre.charts.iter().map(|c| (c.bounds, c.row)).collect();
         let refresh = self.calc.update(cx, |calc, _| {
             calc.layouts = lines;
             calc.result_hits = hits;
+            calc.chart_hits = charts;
             calc.bounds = Some(bounds);
             if calc.autoscroll == 0 {
                 return false;
@@ -2417,7 +2661,7 @@ impl Element for EditorElement {
             // Keep the cursor line (plus a little margin) inside the viewport.
             let view = calc.scroll.bounds();
             let seg = calc.wraps.seg_of(calc.cursor());
-            let top = origin.y + calc.line_h() * seg as f32;
+            let top = origin.y + calc.line_h() * calc.wraps.slot_of(seg) as f32;
             let bottom = top + calc.line_h() + calc.pad_y();
             let mut off = calc.scroll.offset();
             if top < view.top() {
@@ -2460,6 +2704,10 @@ impl Render for Calc {
             .picker
             .as_ref()
             .map(|p| self.render_picker(p, &theme, cx));
+        let chart_view = self
+            .chart_view
+            .as_ref()
+            .map(|v| self.render_chart_view(v, &theme, cx));
         let theme_label = self.theme_label(window);
         let sidebar = self.render_sidebar(&theme, cx);
         let toolbar = (!self.quick).then(|| self.render_toolbar(&theme, window, cx));
@@ -2498,6 +2746,8 @@ impl Render for Calc {
                 "Settings"
             } else if self.picker.is_some() {
                 "ThemePicker"
+            } else if self.chart_view.is_some() {
+                "ChartView"
             } else {
                 "Calc"
             })
@@ -2519,6 +2769,7 @@ impl Render for Calc {
             .on_action(cx.listener(Self::picker_down))
             .on_action(cx.listener(Self::picker_confirm))
             .on_action(cx.listener(Self::picker_cancel))
+            .on_action(cx.listener(Self::close_chart))
             .on_action(cx.listener(Self::select_theme))
             .on_action(cx.listener(Self::match_system_theme))
             .on_action(cx.listener(Self::backspace))
@@ -2683,6 +2934,7 @@ impl Render for Calc {
             })
             .children(picker)
             .children(settings)
+            .children(chart_view)
     }
 }
 
@@ -2698,8 +2950,9 @@ mod tests {
             key: None,
             seg_start: vec![0, 3, 6, 9, 12],
             row_seg: vec![0, 3, 4, 5],
-            folds: Default::default(),
-        };
+            ..Default::default()
+        }
+        .place(|_| 0);
         (w, text.len())
     }
 
@@ -2726,6 +2979,34 @@ mod tests {
         // Where a line wraps, the offset belongs to the segment it starts.
         let segs: Vec<_> = (0..=len).map(|o| w.seg_of(o)).collect();
         assert_eq!(segs, [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn rows_with_charts_are_taller() {
+        // Rows: "ab cd ef" (three segments), "xy" with a chart three lines
+        // tall, then an empty row.
+        let w = Wraps {
+            seg_start: vec![0, 3, 6, 9, 12],
+            row_seg: vec![0, 3, 4, 5],
+            ..Default::default()
+        }
+        .place(|row| if row == 1 { 3 } else { 0 });
+        assert_eq!(w.seg_slot, [0, 1, 2, 3, 6]);
+        assert_eq!(w.row_end, [3, 6, 7]);
+        assert_eq!(w.height(), 7);
+        // Below the chart's text, within its chart, is still its row.
+        assert_eq!(w.seg_at(4), 3);
+        assert_eq!(w.seg_at(5), 3);
+        assert_eq!(w.seg_at(6), 4);
+        assert_eq!(w.seg_at(60), 4);
+        // A chart shorter than its wrapped text adds nothing.
+        let w = Wraps {
+            seg_start: vec![0, 3, 6, 9, 12],
+            row_seg: vec![0, 3, 4, 5],
+            ..Default::default()
+        }
+        .place(|row| if row == 0 { 2 } else { 0 });
+        assert_eq!(w.height(), 5);
     }
 
     #[test]
