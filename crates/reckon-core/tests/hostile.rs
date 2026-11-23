@@ -331,9 +331,5 @@ fn many_words_stuck_to_numbers_stay_cheap() {
     let limit = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
     let started = Instant::now();
     let _ = last_result(sheet);
-    assert!(
-        started.elapsed() < limit,
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < limit, "{:?}", started.elapsed());
 }
