@@ -21,7 +21,7 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Validation of the linear fit against NIST reference data.** The Norris data set and three numerical-accuracy data sets run as automated tests.
 - [x] **Sample sheet for the new features.** "Lists and statistics" is added to the sheets list once, on a new installation or the first start after the update.
 
-## Done on the method-comparison branch (not yet released)
+## Done in 0.4.0: method comparison
 
 - [x] **Confidence intervals for the line fit.** `slope_ci` and `intercept_ci`, 95%, Student's t; checked against the certified standard deviations of NIST Norris.
 - [x] **Passing-Bablok regression.** `pb_slope`, `pb_intercept` and their `_ci` intervals, up to 1,000 points.
@@ -31,7 +31,7 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Long lists on one line.** Plain numbers in a list no longer count toward the 400-item line limit, so a line holds up to 10,000 values.
 - [x] **Sample sheet "Method comparison".** The three fits side by side on thirty samples.
 
-## Done on the ml-tools branch (not yet released)
+## Done in 0.4.0: AI and GPU math
 
 - [x] **Units for AI work.** Parameters, tokens and FLOP as counts, FLOPS as a rate, `70B params`, `2T tokens`, and number formats (`bf16`, `fp8`, `int4`, …) in bytes.
 - [x] **Functions.** `sigmoid`, `logit`, `softmax`, `logsumexp`, `log2`, `perplexity`.
