@@ -57,7 +57,9 @@ text ─► prepare ─► lexer ─► classify ─► parser ─► eval ─�
    beta function; Deming's jackknife leaves each point out by downdating
    the centred sums, so it costs O(n). `DocState` keeps the last
    Passing-Bablok fit with the two lists it came from, so its slope,
-   intercept and intervals on four lines cost one fit.
+   intercept and intervals on four lines cost one fit. Bland-Altman
+   (`bland_altman`) is checked against the peak flow data of Bland and
+   Altman's 1986 paper.
 6. **format** (`value.rs`) handles grouping, precision, currency symbols,
    radix formats and date display.
 

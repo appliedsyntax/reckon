@@ -287,6 +287,49 @@ pub fn passing_bablok(x: &[f64], y: &[f64]) -> Result<Line, PbError> {
     })
 }
 
+// ---------------------------------------------------- Bland-Altman
+
+/// Agreement between two methods from the differences y − x (Bland and
+/// Altman, 1986 and 1999). All limits and intervals are 95%.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Agreement {
+    /// Mean difference.
+    pub bias: f64,
+    pub bias_ci: (f64, f64),
+    /// Limits of agreement: bias ∓ 1.96 standard deviations of the
+    /// differences, where 95% of differences are expected to fall.
+    pub lower: f64,
+    pub upper: f64,
+    /// Confidence intervals of the two limits, from their approximate
+    /// standard error √(3s²/n).
+    pub lower_ci: (f64, f64),
+    pub upper_ci: (f64, f64),
+}
+
+/// Needs at least two pairs.
+pub fn bland_altman(x: &[f64], y: &[f64]) -> Option<Agreement> {
+    let n = x.len();
+    if n < 2 || y.len() != n {
+        return None;
+    }
+    let d: Vec<f64> = x.iter().zip(y).map(|(a, b)| b - a).collect();
+    let bias = mean(&d);
+    let s = variance(&d, true).sqrt();
+    let t = t_quantile(0.975, n as f64 - 1.0);
+    let nf = n as f64;
+    let (se_bias, se_limit) = (s / nf.sqrt(), s * (3.0 / nf).sqrt());
+    let (lower, upper) = (bias - Z95 * s, bias + Z95 * s);
+    let around = |v: f64, se: f64| (v - t * se, v + t * se);
+    Some(Agreement {
+        bias,
+        bias_ci: around(bias, se_bias),
+        lower,
+        upper,
+        lower_ci: around(lower, se_limit),
+        upper_ci: around(upper, se_limit),
+    })
+}
+
 // ------------------------------------------------- machine learning
 
 /// The logistic function, 1 / (1 + e⁻ˣ), without overflow for large |x|.
@@ -807,6 +850,61 @@ mod tests {
             Err(PbError::Negative)
         );
         assert_eq!(passing_bablok(&[1.0], &[1.0]), Err(PbError::TooFewPoints));
+    }
+
+    /// Bland and Altman (1986): peak expiratory flow on the large and the
+    /// mini Wright meter, seventeen people. The paper gives a mean
+    /// difference of 2.1 l/min (as large − mini, −2.1) and a standard
+    /// deviation of 38.8. Every value below is from R 4.6 with qnorm/qt.
+    #[test]
+    fn bland_altman_against_reference() {
+        let large = [
+            494.0, 395.0, 516.0, 434.0, 476.0, 557.0, 413.0, 442.0, 650.0, 433.0, 417.0, 656.0,
+            267.0, 478.0, 178.0, 423.0, 427.0,
+        ];
+        let mini = [
+            512.0, 430.0, 520.0, 428.0, 500.0, 600.0, 364.0, 380.0, 658.0, 445.0, 432.0, 626.0,
+            260.0, 477.0, 259.0, 350.0, 451.0,
+        ];
+        let a = bland_altman(&large, &mini).unwrap();
+        let got = [
+            a.bias,
+            a.bias_ci.0,
+            a.bias_ci.1,
+            a.lower,
+            a.upper,
+            a.lower_ci.0,
+            a.lower_ci.1,
+            a.upper_ci.0,
+            a.upper_ci.1,
+        ];
+        let want = [
+            2.11764705882353,
+            -17.8135435789981,
+            22.0488376966452,
+            -73.8606113494646,
+            78.0959054671117,
+            -108.382446189513,
+            -39.3387765094164,
+            43.5740706270635,
+            112.61774030716,
+        ];
+        for (g, w) in got.iter().zip(want) {
+            close(*g, w, 12);
+        }
+        // The thirty pairs above.
+        let a = bland_altman(&X, &Y).unwrap();
+        close(a.bias, 10.0466666666667, 13);
+        close(a.lower, -12.2139315953889, 13);
+        close(a.upper_ci.1, 39.652924871797, 13);
+        // Swapping the methods mirrors everything.
+        let b = bland_altman(&Y, &X).unwrap();
+        close(b.bias, -a.bias, 14);
+        close(b.lower, -a.upper, 14);
+        // Identical methods agree exactly; one pair is not enough.
+        let same = bland_altman(&X, &X).unwrap();
+        assert_eq!((same.bias, same.lower, same.upper), (0.0, 0.0, 0.0));
+        assert!(bland_altman(&[1.0], &[2.0]).is_none());
     }
 
     #[test]

@@ -708,7 +708,12 @@ impl<'a> Eval<'a> {
             | "deming_slope"
             | "deming_intercept"
             | "deming_slope_ci"
-            | "deming_intercept_ci" => return self.compare(name, &vals),
+            | "deming_intercept_ci"
+            | "ba_bias"
+            | "ba_bias_ci"
+            | "ba_limits"
+            | "ba_lower_ci"
+            | "ba_upper_ci" => return self.compare(name, &vals),
             "softmax" | "logsumexp" | "accuracy_ci" | "mcnemar" | "paired_ci" | "items_needed"
             | "holm" => return self.evaluation(name, &vals),
             _ => {}
@@ -1031,8 +1036,9 @@ impl<'a> Eval<'a> {
 
     /// Method comparison, where x and y measure the same thing in two ways:
     /// `pb_slope(x, y)` (Passing-Bablok) and `deming_slope(x, y, ratio)`,
-    /// with `_intercept` and `_ci` forms. The slope has no unit; y is put in
-    /// x's unit first.
+    /// with `_intercept` and `_ci` forms, and Bland-Altman agreement:
+    /// `ba_bias(x, y)` and `ba_limits(x, y)` with their intervals. The slope
+    /// has no unit; y is put in x's unit first, and differences are y − x.
     fn compare(&mut self, name: &str, vals: &[Value]) -> R {
         let deming = name.starts_with("deming");
         let most = if deming { 3 } else { 2 };
@@ -1073,6 +1079,19 @@ impl<'a> Eval<'a> {
         };
         let (xv, yv) = (convert(&x)?, convert(&y)?);
         let n = xv.len();
+        if name.starts_with("ba_") {
+            self.charge(n)?;
+            let a = stats::bland_altman(&xv, &yv)
+                .ok_or_else(|| format!("{name} needs at least two points"))?;
+            let (lo, hi) = match name {
+                "ba_bias" => return Ok(units.value(a.bias)),
+                "ba_bias_ci" => a.bias_ci,
+                "ba_limits" => (a.lower, a.upper),
+                "ba_lower_ci" => a.lower_ci,
+                _ => a.upper_ci,
+            };
+            return self.interval(units.value(lo), units.value(hi));
+        }
         let line = if deming {
             let ratio = match vals.get(2) {
                 None => 1.0,

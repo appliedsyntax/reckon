@@ -788,3 +788,60 @@ fn money_with_its_sign_and_small_amounts() {
         ("$1e-20", "$1e-20"),
     ]);
 }
+
+#[test]
+fn bland_altman_agreement() {
+    // The thirty pairs of `method_comparison`; values from R (see stats.rs).
+    let data = "\
+ref = [398.8, 183.6, 88.2, 74, 140.9, 332, 173.2, 397.8, 99.7, 218.6, 111.1, 135.5, 323.6, 78.1, 207.3, 74.8, 250.3, 53.7, 394.5, 140.9, 270.6, 159, 392.4, 366.1, 397.9, 80.3, 264.8, 220.3, 382.1, 174.7]
+new = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 172.7, 405.5, 123, 222.2, 115.2, 180.7, 332.3, 85.7, 207.2, 80.8, 254.1, 56.5, 413.4, 167, 290.8, 162.3, 421.2, 388.8, 414.4, 76.4, 269.4, 223, 395.7, 168]
+";
+    let mass = "a = [1 kg, 2 kg, 3 kg]\nb = [1100 g, 2050 g, 2900 g]\n";
+    let with = |lines: &str, last: &str| format!("{lines}{last}");
+    let no = |e: &str| format!("<no result: Some({e:?})>");
+    let cases = [
+        (with(data, "ba_bias(ref, new)"), "10.0467".to_string()),
+        (
+            with(data, "ba_bias_ci(ref, new)"),
+            "[5.8056, 14.2877]".into(),
+        ),
+        (
+            with(data, "ba_limits(ref, new)"),
+            "[-12.2139, 32.3073]".into(),
+        ),
+        (
+            with(data, "ba_lower_ci(ref, new)"),
+            "[-19.5596, -4.8683]".into(),
+        ),
+        (
+            with(data, "ba_upper_ci(ref, new)"),
+            "[24.9616, 39.6529]".into(),
+        ),
+        // Swapping the methods turns the differences round.
+        (with(data, "ba_bias(new, ref)"), "-10.0467".into()),
+        // Differences are in x's unit.
+        (with(mass, "ba_bias(a, b)"), "0.0167 kg".into()),
+        (
+            with(mass, "ba_limits(a, b)"),
+            "[-0.1873 kg, 0.2207 kg]".into(),
+        ),
+        (with("", "ba_bias([10%, 20%], [12%, 21%])"), "1.5%".into()),
+        (
+            with("", "ba_bias([1], [2])"),
+            no("ba_bias needs at least two points"),
+        ),
+        (
+            with("", "ba_limits([1, 2], [1, 2, 3])"),
+            no("the two lists must hold the same number of values"),
+        ),
+        (
+            with("", "ba_bias([1, 2, 3])"),
+            no("ba_bias needs two lists: ba_bias(x, y)"),
+        ),
+    ];
+    let cases: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    check(&cases);
+}

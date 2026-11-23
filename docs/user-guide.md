@@ -250,6 +250,9 @@ deming_intercept_ci(reference, new) → [-4.2115, 12.8468]
 | `pb_slope_ci(x, y)`, `pb_intercept_ci(x, y)` | Its 95% confidence intervals |
 | `deming_slope(x, y)`, `deming_intercept(x, y)` | Deming line |
 | `deming_slope_ci(x, y)`, `deming_intercept_ci(x, y)` | Its 95% confidence intervals |
+| `ba_bias(x, y)`, `ba_bias_ci(x, y)` | Bland-Altman bias (mean difference) and its 95% confidence interval |
+| `ba_limits(x, y)` | 95% limits of agreement |
+| `ba_lower_ci(x, y)`, `ba_upper_ci(x, y)` | 95% confidence interval of each limit |
 
 - **Least squares** assumes x has no error. A single outlier pulls it the
   most. Its intervals use Student's t.
@@ -265,6 +268,13 @@ deming_intercept_ci(reference, new) → [-4.2115, 12.8468]
   y's, as in the R package mcr: `deming_slope(x, y, 0.5)` means x's errors
   have half the variance of y's. The smaller the ratio, the closer the line
   comes to least squares.
+
+- **Bland-Altman** looks at the differences y − x rather than a line. Their
+  average is the bias, and the limits of agreement (bias ∓ 1.96 standard
+  deviations) are where 95% of differences fall. The intervals follow Bland
+  and Altman (1986, 1999): Student's t on n − 1 degrees of freedom, with a
+  standard error of √(3s²/n) for each limit. The checks include the peak
+  flow data from their 1986 paper. The differences are in x's unit.
 
 An interval is a list of two values, lower first. For Passing-Bablok and
 Deming, y is converted to x's unit, the slope has no unit, and the

@@ -29,3 +29,12 @@ Slope: deming_slope(reference, new)
 Slope 95% CI: deming_slope_ci(reference, new)
 Intercept: deming_intercept(reference, new)
 Intercept 95% CI: deming_intercept_ci(reference, new)
+
+# Bland-Altman
+// The differences between the methods (new − reference). Their average is
+// the bias; 95% of differences fall within the limits of agreement.
+Bias: ba_bias(reference, new)
+Bias 95% CI: ba_bias_ci(reference, new)
+Limits of agreement: ba_limits(reference, new)
+Lower limit 95% CI: ba_lower_ci(reference, new)
+Upper limit 95% CI: ba_upper_ci(reference, new)
