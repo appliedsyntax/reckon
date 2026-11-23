@@ -214,18 +214,29 @@ pub fn format_value(v: &Value, ucx: &UnitCtx, s: &Settings) -> String {
         Value::Percent(p) => format!("{}%", format_number(*p, s.precision, s)),
         Value::Time(t) => format_datetime(t, s),
         Value::Num(q) => format_quantity(q, ucx, s),
-        Value::List(l) => format_list(l, ucx, s),
+        Value::List(l) => format_list(l, ucx, s, LIST_WIDTH),
     }
 }
 
-/// Longest list written out in full, in characters. Results sit in a
-/// narrow column, so a longer list shows its first values and a count.
+/// `v` as [`format_value`] writes it, except that a list may take up to
+/// `width` characters before it is shortened (`usize::MAX`: never).
+pub fn format_value_width(v: &Value, ucx: &UnitCtx, s: &Settings, width: usize) -> String {
+    match v {
+        Value::List(l) => format_list(l, ucx, s, width),
+        _ => format_value(v, ucx, s),
+    }
+}
+
+/// Longest list written out in full, in characters, in a line's result.
+/// Results sit in a narrow column (on a phone, most of all), so a longer
+/// list shows its first values and a count. The desktop app gives a list
+/// the room its line leaves (see [`format_value_width`]).
 const LIST_WIDTH: usize = 24;
 
 /// `[1200, 3.5, 8]`, or `[48 km, … 12 values]` when that would be too wide.
 /// Digits are not grouped and the separator avoids the decimal mark, so a
 /// list shown in full can be pasted back in as the same list.
-fn format_list(l: &List, ucx: &UnitCtx, s: &Settings) -> String {
+fn format_list(l: &List, ucx: &UnitCtx, s: &Settings, list_width: usize) -> String {
     let plain = Settings {
         group_sep: None,
         ..s.clone()
@@ -235,18 +246,18 @@ fn format_list(l: &List, ucx: &UnitCtx, s: &Settings) -> String {
     // No more values than this can fit, however short they are.
     let shown: Vec<String> =
         l.v.iter()
-            .take(LIST_WIDTH / 2)
+            .take((list_width / 2).min(l.v.len()))
             .map(|x| format_value(&l.value(*x), ucx, &plain))
             .collect();
     let full = format!("[{}]", shown.join(sep));
     // A pair, such as a confidence interval, is always shown whole.
-    if shown.len() == l.v.len() && (width(&full) <= LIST_WIDTH || l.v.len() <= 2) {
+    if shown.len() == l.v.len() && (width(&full) <= list_width || l.v.len() <= 2) {
         return full;
     }
     let count = format!("… {} values]", l.v.len());
     let mut text = String::from("[");
     for (i, item) in shown.iter().enumerate() {
-        let wide = width(&text) + width(item) + width(sep) + width(&count) > LIST_WIDTH;
+        let wide = width(&text) + width(item) + width(sep) + width(&count) > list_width;
         if i > 0 && wide {
             break;
         }

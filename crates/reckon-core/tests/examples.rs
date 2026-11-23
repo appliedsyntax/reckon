@@ -501,3 +501,35 @@ fn plugins() {
     assert!(e.load_plugin("bad", "unit m \"x\" = 1 m").is_err());
     assert!(e.load_plugin("bad", "nonsense").is_err());
 }
+
+#[test]
+fn lists_as_wide_as_there_is_room_and_copied_whole() {
+    let e = engine();
+    let out = e.evaluate("x = [405.6, 204.4, 95.3, 74.8, 144.8, 335, 0.1, 1234567.25]");
+    let v = out[0].value.clone().unwrap();
+    assert_eq!(out[0].text.as_deref(), Some("[405.6, … 8 values]"));
+    assert_eq!(
+        e.format_width(&v, Some(40)),
+        "[405.6, 204.4, 95.3, 74.8, … 8 values]"
+    );
+    assert_eq!(
+        e.format_width(&v, Some(200)),
+        "[405.6, 204.4, 95.3, 74.8, 144.8, 335, 0.1, 1234567.25]"
+    );
+    assert_eq!(
+        e.format_for_copy(&v),
+        "[405.6, 204.4, 95.3, 74.8, 144.8, 335, 0.1, 1234567.25]"
+    );
+    let out = e.evaluate("y = [0.1 + 0.2, 1/3, 2 kg, 1e-9]");
+    let v = out[0].value.clone().unwrap();
+    assert_eq!(
+        e.format_for_copy(&v),
+        "[0.3 kg, 0.333333333333333 kg, 2 kg, 0.000000001 kg]"
+    );
+    let out = e.evaluate("z = [1 kg, 2.5 kg]\n50");
+    assert_eq!(
+        e.format_for_copy(out[0].value.as_ref().unwrap()),
+        "[1 kg, 2.5 kg]"
+    );
+    assert_eq!(e.format_for_copy(out[1].value.as_ref().unwrap()), "50");
+}

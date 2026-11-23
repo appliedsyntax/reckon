@@ -157,8 +157,16 @@ median(weights)                   → 2 kg
 stdev(weights)                    → 1.2583 kg
 ```
 
-A list too wide for the results column shows its first values and a count:
-`[48 km, … 12 values]`.
+A list too wide for its result shows its first values and a count:
+`[48 km, … 12 values]`. In the desktop app a list's result takes whatever
+room its line leaves, so a short line shows more values. Clicking the
+result (or ⇧⌘C) copies every value, ready to paste into a spreadsheet or a
+sheet.
+
+In the desktop app, a list too long for one line is drawn folded while the
+cursor is elsewhere: `new = [405.6, 204.4, 95.3, … 200 values]`, with the
+count dimmed. Click it, or move the cursor onto it, to see and edit every
+value; it folds again when the cursor leaves.
 
 The values of a list share one unit: the first unit written. Inside the
 brackets a comma always separates values, so `[1,200]` is two numbers; write

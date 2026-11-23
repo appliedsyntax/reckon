@@ -218,15 +218,68 @@ struct Snapshot {
 /// How the document is cut into the lines that are drawn. A line of the
 /// document (a "row", one result each) that is too long for the text column
 /// wraps onto several visual lines ("segments"), all one line height tall.
+/// Text hash, wrap width, text size and the selection's first and last row.
+type WrapKey = (u64, Option<u32>, u32, (usize, usize));
+
 #[derive(Default)]
 struct Wraps {
     /// What this was worked out for: the text (hashed), the width text may
-    /// run to, and the text size. `None` until the first time.
-    key: Option<(u64, Option<u32>, u32)>,
+    /// run to, the text size, and the rows the selection covers (which are
+    /// never folded). `None` until the first time.
+    key: Option<WrapKey>,
     /// Offset in the text where each segment starts.
     seg_start: Vec<usize>,
     /// The first segment of each row, then the number of segments.
     row_seg: Vec<usize>,
+    /// Rows drawn folded onto one segment (see [`Fold`]).
+    folds: std::collections::HashMap<usize, Fold>,
+}
+
+/// A long list, such as imported data, drawn on one line while the cursor
+/// is elsewhere: `x = [405.6, 204.4, … 30 values]`. Its first `shown` bytes
+/// are the row's own text, so a click there lands where it should; a click
+/// after them goes to the end of the row. Once the cursor is on the row it
+/// unfolds, to be edited.
+struct Fold {
+    display: String,
+    shown: usize,
+}
+
+/// The folded form of `line`, a list of `n` values, as long as `fits`
+/// allows: the start of the line up to a value, then a count. `None` when
+/// the line is not just a list (perhaps with a name or label before it).
+fn fold_line(line: &str, n: usize, mut fits: impl FnMut(&str) -> bool) -> Option<Fold> {
+    let open = line.find('[')?;
+    let close = line.rfind(']')?;
+    if close < open || !line[close + 1..].trim().is_empty() || line[open + 1..close].contains('[') {
+        return None;
+    }
+    // Places to cut: after the bracket, then after each value's comma.
+    let mut cuts = vec![open + 1];
+    let mut depth = 0i32;
+    for (i, c) in line[open + 1..close].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' | ';' if depth == 0 => cuts.push(open + 1 + i + 1),
+            _ => {}
+        }
+    }
+    let make = |cut: usize| {
+        let gap = if cut == open + 1 { "" } else { " " };
+        format!("{}{gap}… {n} values]", &line[..cut])
+    };
+    let mut best = cuts[0];
+    for &cut in &cuts[1..] {
+        if !fits(&make(cut)) {
+            break;
+        }
+        best = cut;
+    }
+    Some(Fold {
+        display: make(best),
+        shown: best,
+    })
 }
 
 impl Wraps {
@@ -500,10 +553,12 @@ impl Calc {
     fn ensure_wraps(&mut self, window: &Window) {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.text.hash(&mut hasher);
+        let selected = (self.row_of(self.sel.start), self.row_of(self.sel.end));
         let key = (
             hasher.finish(),
             self.wrap_width.map(|w| f32::from(w).to_bits()),
             self.font_size.to_bits(),
+            selected,
         );
         if self.wraps.key == Some(key) {
             return;
@@ -516,8 +571,9 @@ impl Calc {
             )
         });
         let (mut seg_start, mut row_seg) = (Vec::new(), Vec::new());
+        let mut folds = std::collections::HashMap::new();
         let mut at = 0;
-        for line in self.text.split('\n') {
+        for (row, line) in self.text.split('\n').enumerate() {
             row_seg.push(seg_start.len());
             seg_start.push(at);
             if let Some((width, wrapper)) = wrapper.as_mut() {
@@ -526,11 +582,38 @@ impl Calc {
                 // edge and need no measuring.
                 if line.len() as f32 * self.font_size > f32::from(*width) {
                     let fragments = [LineFragment::text(line)];
-                    let mut last = 0;
-                    for boundary in wrapper.wrap_line(&fragments, *width) {
-                        if boundary.ix > last && boundary.ix < line.len() {
-                            seg_start.push(at + boundary.ix);
-                            last = boundary.ix;
+                    let breaks: Vec<usize> = wrapper
+                        .wrap_line(&fragments, *width)
+                        .map(|b| b.ix)
+                        .filter(|ix| *ix > 0 && *ix < line.len())
+                        .collect();
+                    // A long list folds onto one line unless it is being
+                    // edited (the cursor or selection is on it).
+                    let list_len = match self.outputs.get(row).and_then(|o| o.value.as_ref()) {
+                        Some(reckon_core::Value::List(l)) => Some(l.v.len()),
+                        _ => None,
+                    };
+                    let editing = (selected.0..=selected.1).contains(&row);
+                    let fold = list_len
+                        .filter(|_| !breaks.is_empty() && !editing)
+                        .and_then(|n| {
+                            fold_line(line, n, |t| {
+                                let f = [LineFragment::text(t)];
+                                let fits = wrapper
+                                    .wrap_line(&f, *width)
+                                    .all(|b| b.ix == 0 || b.ix >= t.len());
+                                fits
+                            })
+                        });
+                    if let Some(fold) = fold {
+                        folds.insert(row, fold);
+                    } else {
+                        let mut last = 0;
+                        for ix in breaks {
+                            if ix > last {
+                                seg_start.push(at + ix);
+                                last = ix;
+                            }
                         }
                     }
                 }
@@ -542,6 +625,7 @@ impl Calc {
             key: Some(key),
             seg_start,
             row_seg,
+            folds,
         };
     }
 
@@ -564,6 +648,19 @@ impl Calc {
         } else {
             r.end
         }
+    }
+
+    /// The offset at column `col` of the text drawn on segment `seg`. On a
+    /// folded row, past the part of the row shown as it is, that is the
+    /// end of the row.
+    fn seg_offset(&self, seg: usize, col: usize) -> usize {
+        let row = self.wraps.row_of_seg(seg);
+        if let Some(f) = self.wraps.folds.get(&row) {
+            if col > f.shown {
+                return self.wraps.row_range(row, self.text.len()).end;
+            }
+        }
+        self.snap((self.wraps.seg_start[seg] + col).min(self.seg_cursor_end(seg)))
     }
 
     /// The visual line the cursor is on, for Home and End.
@@ -740,8 +837,7 @@ impl Calc {
             .get(target)
             .map(|l| l.closest_index_for_x(x))
             .unwrap_or(0);
-        let o = (self.wraps.seg_start[target] + col).min(self.seg_cursor_end(target));
-        self.snap(o)
+        self.seg_offset(target, col)
     }
 
     fn index_at(&mut self, pos: Point<Pixels>, window: &Window) -> usize {
@@ -758,8 +854,7 @@ impl Calc {
             .get(seg)
             .map(|l| l.closest_index_for_x(pos.x - b.left() - self.pad_x()))
             .unwrap_or(0);
-        let o = (self.wraps.seg_start[seg] + col).min(self.seg_cursor_end(seg));
-        self.snap(o)
+        self.seg_offset(seg, col)
     }
 
     fn snapshot(&mut self) {
@@ -808,6 +903,28 @@ impl Calc {
         self.set_status(format!("Copied {text}"));
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.notify();
+    }
+
+    /// Copies a row's result. A list is copied with every value, however
+    /// few are shown, so it can be pasted into a spreadsheet or a sheet.
+    /// `false` when the row has no result.
+    fn copy_row_result(&mut self, row: usize, cx: &mut Context<Self>) -> bool {
+        let Some(o) = self.outputs.get(row).filter(|o| o.text.is_some()) else {
+            return false;
+        };
+        match &o.value {
+            Some(v @ reckon_core::Value::List(l)) => {
+                let (text, n) = (self.engine.format_for_copy(v), l.v.len());
+                self.set_status(format!("Copied all {n} values"));
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                cx.notify();
+            }
+            _ => {
+                let text = o.text.clone().unwrap_or_default();
+                self.copy_text(text, cx);
+            }
+        }
+        true
     }
 
     /// Fetches rates again once they are stale. They are fetched when the
@@ -1452,12 +1569,9 @@ impl Calc {
     }
     fn copy_result(&mut self, _: &CopyResult, _: &mut Window, cx: &mut Context<Self>) {
         let row = self.row_of(self.cursor());
-        match self.outputs.get(row).and_then(|o| o.text.clone()) {
-            Some(t) => self.copy_text(t, cx),
-            None => {
-                self.set_status("No result on this line");
-                cx.notify();
-            }
+        if !self.copy_row_result(row, cx) {
+            self.set_status("No result on this line");
+            cx.notify();
         }
     }
     fn copy_all(&mut self, _: &CopyAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -1567,10 +1681,10 @@ impl Calc {
         window.focus(&self.focus);
         // A click on a result copies it.
         let hit = self.result_hits.iter().find(|h| h.0.contains(&ev.position));
-        let result = hit.and_then(|h| self.outputs.get(h.1)?.text.clone());
-        if let Some(text) = result {
-            self.copy_text(text, cx);
-            return;
+        if let Some(row) = hit.map(|h| h.1) {
+            if self.copy_row_result(row, cx) {
+                return;
+            }
         }
         let ix = self.index_at(ev.position, window);
         match ev.click_count {
@@ -1848,6 +1962,9 @@ fn backdrop(
 struct ResultMark {
     text: SharedString,
     origin: Point<Pixels>,
+    /// Where it may be drawn: the results column, or for a list as much of
+    /// the line as its text leaves free.
+    clip: Bounds<Pixels>,
     /// For the pointing-hand cursor and the hover tint.
     hitbox: Hitbox,
     row: usize,
@@ -1861,9 +1978,8 @@ struct Prepaint {
     results: Vec<ResultMark>,
     /// Top left of the first line of text.
     origin: Point<Pixels>,
-    /// The parts of the element text and results may be drawn in.
+    /// The part of the element text may be drawn in.
     text_clip: Bounds<Pixels>,
-    results_clip: Bounds<Pixels>,
 }
 
 impl IntoElement for EditorElement {
@@ -2055,13 +2171,47 @@ impl Element for EditorElement {
 
         let mut lines = vec![ShapedLine::default(); wraps.segs()];
         let mut results = Vec::new();
+        // Results are in a fixed-width font: the width of one character.
+        let digit_w = window
+            .text_system()
+            .shape_line(
+                "0".into(),
+                font_size,
+                &[result_run(1, &font, &theme, theme.result)],
+                None,
+            )
+            .width
+            .max(px(1.));
         for &row in &rows {
             let range = wraps.row_range(row, len);
             let line = &calc.text[range.clone()];
             let output = calc.outputs.get(row);
             let spans = output.map(|o| o.spans.as_slice()).unwrap_or(&[]);
             let runs = runs_for(line, spans, &theme, &font);
-            for seg in wraps.row_segs(row) {
+            if let Some(f) = wraps.folds.get(&row) {
+                // The start of the row as it is, then the count, dimmed.
+                let mut r = slice_runs(&runs, 0..f.shown);
+                let mut tail = font.clone();
+                tail.weight = theme.text_weight;
+                r.push(TextRun {
+                    len: f.display.len() - f.shown,
+                    font: tail,
+                    color: theme.muted,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+                lines[wraps.row_seg[row]] = window.text_system().shape_line(
+                    SharedString::from(f.display.clone()),
+                    font_size,
+                    &r,
+                    None,
+                );
+            }
+            for seg in wraps
+                .row_segs(row)
+                .filter(|_| !wraps.folds.contains_key(&row))
+            {
                 let r = wraps.seg_range(seg, len);
                 let part = r.start - range.start..r.end - range.start;
                 lines[seg] = window.text_system().shape_line(
@@ -2077,21 +2227,37 @@ impl Element for EditorElement {
             if !in_view.contains(&row) {
                 continue;
             }
+            let top = seg_top(wraps.row_seg[row]);
+            // A list gets the room its line leaves, not just the column.
+            let mut clip_left = results_clip.left();
+            let text = match output.and_then(|o| o.value.as_ref()) {
+                Some(v @ reckon_core::Value::List(_)) => {
+                    let text_end = origin.x + lines[wraps.row_seg[row]].width + RESULTS_GAP;
+                    clip_left = clip_left.min(text_end);
+                    let chars = ((results_clip.right() - clip_left) / digit_w).floor() as usize;
+                    calc.engine.format_width(v, Some(chars))
+                }
+                _ => text,
+            };
             let text = SharedString::from(text);
             let run = result_run(text.len(), &font, &theme, theme.result);
             let width = window
                 .text_system()
                 .shape_line(text.clone(), font_size, &[run], None)
                 .width;
-            let top = seg_top(wraps.row_seg[row]);
             let left = results_clip.right() - width;
+            let clip = Bounds::from_corners(
+                point(clip_left, results_clip.top()),
+                results_clip.bottom_right(),
+            );
             let hit = Bounds::from_corners(
-                point(left.max(results_clip.left()), top),
+                point(left.max(clip_left), top),
                 point(results_clip.right(), top + line_h),
             );
             results.push(ResultMark {
                 text,
                 origin: point(left, top),
+                clip,
                 hitbox: window.insert_hitbox(hit, HitboxBehavior::Normal),
                 row,
             });
@@ -2163,7 +2329,6 @@ impl Element for EditorElement {
             results,
             origin,
             text_clip,
-            results_clip,
         }
     }
 
@@ -2208,27 +2373,21 @@ impl Element for EditorElement {
         // Results: a click copies one, so the pointer becomes a hand over
         // it and the result dims a little.
         let hovered = pre.results.iter().position(|r| r.hitbox.is_hovered(window));
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: pre.results_clip,
-            }),
-            |window| {
-                for (i, r) in pre.results.iter().enumerate() {
-                    let color = if hovered == Some(i) {
-                        theme.result.opacity(0.7)
-                    } else {
-                        theme.result
-                    };
-                    let run = result_run(r.text.len(), &font, &theme, color);
-                    let line =
-                        window
-                            .text_system()
-                            .shape_line(r.text.clone(), font_size, &[run], None);
-                    line.paint(r.origin, line_h, window, cx).ok();
-                    window.set_cursor_style(CursorStyle::PointingHand, &r.hitbox);
-                }
-            },
-        );
+        for (i, r) in pre.results.iter().enumerate() {
+            window.with_content_mask(Some(ContentMask { bounds: r.clip }), |window| {
+                let color = if hovered == Some(i) {
+                    theme.result.opacity(0.7)
+                } else {
+                    theme.result
+                };
+                let run = result_run(r.text.len(), &font, &theme, color);
+                let line = window
+                    .text_system()
+                    .shape_line(r.text.clone(), font_size, &[run], None);
+                line.paint(r.origin, line_h, window, cx).ok();
+                window.set_cursor_style(CursorStyle::PointingHand, &r.hitbox);
+            });
+        }
         let hitboxes: Vec<Hitbox> = pre.results.iter().map(|r| r.hitbox.clone()).collect();
         window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
             let now = hitboxes.iter().position(|h| h.is_hovered(window));
@@ -2539,6 +2698,7 @@ mod tests {
             key: None,
             seg_start: vec![0, 3, 6, 9, 12],
             row_seg: vec![0, 3, 4, 5],
+            folds: Default::default(),
         };
         (w, text.len())
     }
@@ -2566,6 +2726,26 @@ mod tests {
         // Where a line wraps, the offset belongs to the segment it starts.
         let segs: Vec<_> = (0..=len).map(|o| w.seg_of(o)).collect();
         assert_eq!(segs, [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn long_lists_fold_onto_one_line() {
+        // Text up to 33 characters fits.
+        let fits = |t: &str| t.chars().count() <= 33;
+        let line = "new = [405.6, 204.4, 95.3, 74.8, 144.8]";
+        let f = fold_line(line, 5, fits).unwrap();
+        assert_eq!(f.display, "new = [405.6, 204.4, … 5 values]");
+        assert_eq!(&line[..f.shown], "new = [405.6, 204.4,");
+        // Labels, semicolons and values in parentheses.
+        let f = fold_line("Ref: a = [(1 + 2); 3; 4; 5; 6; 7; 8]", 7, fits).unwrap();
+        assert_eq!(f.display, "Ref: a = [(1 + 2); 3; … 7 values]");
+        // Not even one value fits: the count alone.
+        let f = fold_line("a_very_long_name = [1, 2, 3]", 3, fits).unwrap();
+        assert_eq!(f.display, "a_very_long_name = [… 3 values]");
+        // Only a list is folded, and only a flat one.
+        assert!(fold_line("sum(x) + 3", 3, fits).is_none());
+        assert!(fold_line("x = [1, 2] * 3", 2, fits).is_none());
+        assert!(fold_line("x = [[1, 2], [3]]", 3, fits).is_none());
     }
 
     #[test]

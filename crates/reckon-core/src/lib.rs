@@ -301,13 +301,62 @@ impl Engine {
     }
 
     pub fn format(&self, v: &Value) -> String {
+        self.format_width(v, None)
+    }
+
+    /// A result as text, with a list given up to `width` characters before
+    /// it is shortened to its first values and a count. With `None` a list
+    /// is written in the usual result width.
+    pub fn format_width(&self, v: &Value, width: Option<usize>) -> String {
         let ucx = UnitCtx {
             reg: &self.reg,
             rates: &self.rates,
             ppi: 96.0,
             em_px: 16.0,
         };
-        format_value(v, &ucx, &self.settings)
+        match width {
+            Some(w) => value::format_value_width(v, &ucx, &self.settings, w),
+            None => format_value(v, &ucx, &self.settings),
+        }
+    }
+
+    /// A result as it is copied: a list with every value, to the 15
+    /// decimal places a double holds, so pasting it back gives the same
+    /// list. Other values as they are shown.
+    pub fn format_for_copy(&self, v: &Value) -> String {
+        let Value::List(l) = v else {
+            return self.format(v);
+        };
+        let ucx = UnitCtx {
+            reg: &self.reg,
+            rates: &self.rates,
+            ppi: 96.0,
+            em_px: 16.0,
+        };
+        let sep = if self.settings.decimal_sep == ',' {
+            "; "
+        } else {
+            ", "
+        };
+        let items: Vec<String> =
+            l.v.iter()
+                .map(|x| {
+                    // Fifteen significant digits: all a double holds, without
+                    // the noise in the last ones.
+                    let mag = if *x == 0.0 {
+                        0
+                    } else {
+                        x.abs().log10().floor() as i64
+                    };
+                    let s = Settings {
+                        precision: (14 - mag).clamp(0, 15) as usize,
+                        group_sep: None,
+                        ..self.settings.clone()
+                    };
+                    format_value(&l.value(*x), &ucx, &s)
+                })
+                .collect();
+        format!("[{}]", items.join(sep))
     }
 
     fn classify_tokens(&self, toks: &[lexer::Token], st: &DocState) -> Vec<parser::It> {
