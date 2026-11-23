@@ -4252,7 +4252,7 @@ checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
 name = "reckon-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "gpui",
  "reckon-core",
@@ -4260,14 +4260,14 @@ dependencies = [
 
 [[package]]
 name = "reckon-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "reckon-core",
 ]
 
 [[package]]
 name = "reckon-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "roxmltree",
@@ -4275,7 +4275,7 @@ dependencies = [
 
 [[package]]
 name = "reckon-ffi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "reckon-core",
 ]

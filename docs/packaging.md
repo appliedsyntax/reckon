@@ -86,7 +86,7 @@ zip → zipalign → apksigner
 - Install on a device or emulator:
 
 ```bash
-adb install dist/Reckon-0.4.0-android.apk
+adb install dist/Reckon-0.5.0-android.apk
 ```
 
 ### Linux

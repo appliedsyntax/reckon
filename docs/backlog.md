@@ -39,11 +39,11 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Errors instead of silence.** An unknown function call, or a near-miss of a unit stuck to a number (`989TFLOPZ`, "did you mean TFLOPS?"), is an error rather than a quietly wrong number. Other prose works as before.
 - [x] **Sample sheet "AI and GPU math".** Model memory, KV cache, training compute and days, serving cost, an API bill and a model comparison.
 
-## Done on the bland-altman branch (not yet released)
+## Done in 0.5.0: Bland-Altman
 
 - [x] **Bland-Altman analysis.** `ba_bias`, `ba_limits` and the 95% confidence intervals of the bias and of each limit, checked against the peak flow data of the 1986 paper. Added to the "Method comparison" sample sheet. The plot comes with the charts below.
 
-## Done on the bland-altman branch: charts (not yet released)
+## Done in 0.5.0: charts
 
 A chart is a result: written on the left as a function, drawn small on the right where the result goes. Desktop first. A mockup of the desktop window (Graphite theme) was approved on 23 November 2026; the open questions were settled on 23 November: all four charts, the line grows to hold its chart, and copy-as-image later.
 
