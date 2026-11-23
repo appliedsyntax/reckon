@@ -533,3 +533,137 @@ fn lists_as_wide_as_there_is_room_and_copied_whole() {
     );
     assert_eq!(e.format_for_copy(out[1].value.as_ref().unwrap()), "50");
 }
+
+#[test]
+fn machine_learning_units() {
+    check(&[
+        ("7B params", "7,000,000,000 params"),
+        ("2T tokens", "2,000,000,000,000 tokens"),
+        // `7B` alone is still seven bytes.
+        ("7B", "7 B"),
+        ("70B params * bf16 in GB", "140 GB"),
+        ("70B params * bf16", "140,000,000,000 B"),
+        ("8B params * int4 in GiB", "3.7253 GiB"),
+        ("70B params * bf16 / (7B params)", "20 B"),
+        ("2 * 80 * 8 * 128 * bf16 / token", "327,680 B/tok"),
+        (
+            "kv = 2 * 80 * 8 * 128 * bf16 / token\nkv * 32768 tokens * 8 in GiB",
+            "80 GiB",
+        ),
+        ("6 * 7B params * 2T tokens", "8.4e22"),
+        ("6 * 7B params * 2T tokens in ZFLOP", "84 ZFLOP"),
+        ("12 FLOPs", "12 FLOP"),
+        ("1 teraflops", "1 TFLOPS"),
+        ("989 TFLOPS * 30 days in EFLOP", "2,563.488 EFLOP"),
+        (
+            "8.4e22 FLOP / (64 * 989 TFLOPS * 40%) in days",
+            "38.3998 days",
+        ),
+        ("1500 tokens/s * 1 h", "5,400,000 tokens"),
+        ("1500 tokens/s * 1 h in Mtok", "5.4 Mtok"),
+        ("50M tokens * $3/Mtok", "$150"),
+        ("50 million tokens * $3 per million tokens", "$150"),
+        (
+            "1000 * (2000 tokens * $3/Mtok + 500 tokens * $15/Mtok)",
+            "$13.50",
+        ),
+        ("$2.50/h / (1500 tokens/s) in $/Mtok", "0.463 USD/Mtok"),
+        (
+            "3.35 TB/s / (70B params * bf16) in tokens/s",
+            "23.9286 tok/s",
+        ),
+        (
+            "5 tokens in GB",
+            "<no result: Some(\"cannot convert tok to GB\")>",
+        ),
+    ]);
+}
+
+#[test]
+fn machine_learning_functions() {
+    let ab = "a = [1, 0, 1, 1, 0, 1, 1, 1, 0, 1]\nb = [1, 1, 1, 1, 1, 1, 1, 1, 0, 1]\n";
+    let xy = "x = [0.61, 0.72, 0.55, 0.80, 0.67, 0.59, 0.70, 0.64, 0.75, 0.58]\n\
+              y = [0.66, 0.74, 0.60, 0.79, 0.71, 0.65, 0.73, 0.70, 0.77, 0.62]\n";
+    let with = |lines: &str, last: &str| format!("{lines}{last}");
+    let no = |e: &str| format!("<no result: Some({e:?})>");
+    let cases = [
+        with("", "sigmoid(0)"),
+        with("", "sigmoid 2"),
+        with("", "logit(88%)"),
+        with("", "log2(1024)"),
+        with("", "softmax(1, 2, 3)"),
+        with("", "softmax([2, 1, 0.1])"),
+        with("", "logsumexp(1, 2, 3)"),
+        with("", "perplexity(2.1)"),
+        with("", "accuracy_ci(82, 100)"),
+        with("", "accuracy_ci(82%, 100)"),
+        with("", "accuracy_ci(0, 20)"),
+        with("", "mcnemar(30, 12)"),
+        with("", "mcnemar(7, 1)"),
+        with(ab, "mcnemar(a, b)"),
+        with(xy, "paired_ci(x, y)"),
+        with("", "items_needed(80%, 2%)"),
+        with("", "holm(0.01, 0.04, 0.03, 0.2)"),
+        with("", "logit(1.5)"),
+        with("", "accuracy_ci(101, 100)"),
+        with("", "accuracy_ci(1.5, 10)"),
+        with("", "mcnemar([1, 2], [0, 1])"),
+        with("", "mcnemar([1, 0], [1])"),
+        with("", "holm(2)"),
+        with("", "softmax([1 kg, 2 kg])"),
+        with("", "items_needed(80%, 0%)"),
+        with("", "paired_ci([1], [2])"),
+    ];
+    let want = [
+        "0.5".to_string(),
+        "0.8808".into(),
+        "1.9924".into(),
+        "10".into(),
+        "[0.09, 0.2447, 0.6652]".into(),
+        "[0.659, 0.2424, 0.0986]".into(),
+        "3.4076".into(),
+        "8.1662".into(),
+        "[73.3326%, 88.2998%]".into(),
+        "[73.3326%, 88.2998%]".into(),
+        "[0%, 16.1125%]".into(),
+        "0.0087".into(),
+        "0.0703".into(),
+        "0.5".into(),
+        "[0.0205, 0.0515]".into(),
+        "1,537".into(),
+        "[0.04, 0.09, 0.09, 0.2]".into(),
+        no("logit needs a probability between 0 and 1"),
+        no("accuracy_ci needs correct ≤ total, and a total above 0"),
+        no("the number correct must be a whole number of items"),
+        no("mcnemar needs lists of 1 (right) and 0 (wrong)"),
+        no("the two lists must hold the same number of values"),
+        no("holm needs p-values between 0 and 1"),
+        no("softmax works on plain numbers"),
+        no("items_needed needs percentages between 0% and 100%"),
+        no("paired_ci needs at least two items"),
+    ];
+    let cases: Vec<(&str, &str)> = cases
+        .iter()
+        .zip(&want)
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    check(&cases);
+}
+
+/// A typo must not quietly give a number.
+#[test]
+fn unknown_functions_and_units_are_errors() {
+    check(&[
+        (
+            "sigmoyd(0)",
+            "<no result: Some(\"unknown function sigmoyd\")>",
+        ),
+        ("989TFLOPZ", "<no result: Some(\"unknown unit TFLOPZ\")>"),
+        // Prose is still fine: unknown words that are not stuck to a number
+        // or to an opening parenthesis, ordinals, and `2x`.
+        ("fooBar 3", "3"),
+        ("my 2nd try: 7", "7"),
+        ("2x", "2"),
+        ("8 GPUs * $2/h * 24 h", "$384"),
+    ]);
+}

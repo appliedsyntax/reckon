@@ -97,6 +97,23 @@ SI and binary prefixes are generated when the registry is built. Unit
 symbols are case-sensitive (`MB` and `mb` differ) and unit names are not
 (`Kilometers` works).
 
+Tokens, parameters and FLOP are counts: units with an all-zero dimension
+vector, told apart by `UnitCtx::count_kind`. Two rules make rough estimates
+read naturally. In a product or quotient (`UnitCtx::tidy`), counts of one
+kind are put in one unit so they cancel (`tok/Mtok`), and a result with no
+dimension becomes a plain number unless it is a single count (`tokens`).
+When a value is shown (`UnitCtx::shown`), counts multiplied into a real
+quantity fold into its number, so `params × bf16` shows as bytes while the
+value keeps the parameters to cancel later. Converting a plain number to a
+count unit divides by the unit's factor (`8.4e22 in EFLOP`), where any other
+unit is simply attached (`5 in km`). The number formats (`bf16`, `int4`, …)
+are built-in global values in bytes, which a sheet's own variables shadow.
+
+Classification treats `B`/`T` before `params` or `tokens` as billions and
+trillions. An unknown word stuck to an opening parenthesis becomes a call
+(so `sigmoyd(0)` fails as an unknown function), and one stuck to a number
+becomes `Item::Unknown` (an "unknown unit" error), except ordinals and `x`.
+
 ## Time and time zones
 
 `time.rs` implements civil-date arithmetic using Howard Hinnant's

@@ -13,6 +13,7 @@ lines above it.
 | `Rent: $1,200` | `Rent:` is a label and is not evaluated |
 | `$275 for the "Model 227"` | Text in double quotes is ignored |
 | `prev - 5% discount` | Unknown words are ignored, so prose is fine |
+| `sigmoyd(0)`, `989TFLOPZ` | Errors: an unknown word right before `(` or stuck to a number is taken for a misspelt function or unit, not ignored |
 | `1 m 20 cm = 120 cm` | Anything after a top-level `=` is ignored, so you can paste annotated examples |
 
 A colon between digits (`2:30`) is a time, not a label.
@@ -304,6 +305,67 @@ How a table is read:
 
 The phone apps cannot import files yet.
 
+## AI and machine learning
+
+Rough numbers for models: memory, compute, time and cost. The sample sheet
+"AI and GPU math" has a worked example of each.
+
+### Units
+
+| Unit | Written as |
+|---|---|
+| Parameters | `params`, `parameters`; `70B params` is 70 billion |
+| Tokens | `tokens`, `tok`, `ktok`, `Mtok`, `Btok`, `Ttok`, `million tokens`; `2T tokens` is 2 trillion |
+| Floating-point operations | `FLOP` or `FLOPs`, with prefixes: `PFLOP`, `EFLOP`, `ZFLOP` |
+| Operations per second | `FLOPS` or `flops`, with prefixes: `TFLOPS`, `teraflops` |
+| Number formats | `fp64`, `fp32`, `tf32`, `fp16`, `bf16`, `fp8`, `int8`, `fp6`, `int4`, `fp4`, `nf4`: the bytes one value takes |
+
+`7B` on its own is still seven bytes; it means billions only before
+`params` or `tokens`.
+
+Parameters, tokens and FLOP are counts with no dimension, so they combine
+the way rough estimates do:
+
+```text
+70B params * bf16 in GB                     → 140 GB
+kv = 2 * 80 * 8 * 128 * bf16 / token        → 327,680 B/tok
+kv * 32768 tokens * 8 in GiB                → 80 GiB
+6 * 70B params * 2T tokens in ZFLOP         → 840 ZFLOP
+840 ZFLOP / (1024 * 989 TFLOPS * 40%) in days → 23.9999 days
+1500 tokens/s * 1 h in Mtok                 → 5.4 Mtok
+50M tokens * $3/Mtok                        → $150
+$2.50/h / (1500 tokens/s) in $/Mtok         → 0.463 USD/Mtok
+```
+
+A plain number converted to a count is taken as single units:
+`8.4e22 in EFLOP` gives 84,000 EFLOP. Counts multiplied into a quantity
+are shown in that quantity's unit (parameters × bytes shows as bytes) and
+still cancel later.
+
+### Functions
+
+| Function | Result |
+|---|---|
+| `sigmoid(x)`, `logit(p)` | The logistic function and its inverse |
+| `softmax(scores)` | A list of probabilities that sum to 1 |
+| `logsumexp(scores)` | ln Σ eˣ, without overflow |
+| `log2(x)` | Logarithm base 2 |
+| `perplexity(loss)` | e to the power of a loss in nats per token |
+
+### Comparing models on an evaluation set
+
+| Function | Result |
+|---|---|
+| `accuracy_ci(correct, total)` | 95% interval for an accuracy (Wilson score), as percentages. `accuracy_ci(82%, 500)` also works. |
+| `mcnemar(b, c)` | p-value for two models scored on the same items, where `b` items only the first got right and `c` only the second. Exact below 25 disagreements, chi-squared with continuity correction above. |
+| `mcnemar(a, b)` | The same from two lists of per-item results, 1 for right and 0 for wrong |
+| `paired_ci(a, b)` | 95% interval for the mean difference b − a of per-item scores (Student's t) |
+| `items_needed(accuracy, margin)` | Items needed for the 95% interval of that accuracy to be ± margin: `items_needed(80%, 2%)` → 1,537 |
+| `holm(p-values)` | Holm's adjustment for many comparisons, in the order given |
+
+These names are functions only when followed by `(`, except `sigmoid`,
+`logit` and `log2`, which work like `sqrt`. All were checked against R.
+
 ## Dates and times
 
 ```text
@@ -442,7 +504,7 @@ to a `.trash` folder inside the sheets folder rather than being erased.
 A new installation starts with a welcome sheet. When a version of Reckon
 brings a feature worth showing, it also adds one sample sheet for it, on a
 new installation and on the first start after the update: so far "Lists
-and statistics" and "Method comparison".
+and statistics", "Method comparison" and "AI and GPU math".
 
 A sample appears in the list just below the sheet you had open; it never
 replaces the sheet you are working on. It is an ordinary sheet: edit it, or

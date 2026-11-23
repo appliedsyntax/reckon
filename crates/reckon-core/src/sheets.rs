@@ -349,6 +349,7 @@ pub const SAMPLES: &[(&str, &str)] = &[
         "method-comparison",
         include_str!("../samples/method-comparison.reckon"),
     ),
+    ("ai-math", include_str!("../samples/ai-math.reckon")),
 ];
 
 /// Hidden file in a sheets folder that lists the ids of the samples already
@@ -512,7 +513,12 @@ mod tests {
     #[test]
     fn samples_are_added_once() {
         let titles = |d: &Path| -> Vec<String> { list(d).into_iter().map(|s| s.title).collect() };
-        let samples = ["Lists and statistics", "Method comparison"].map(String::from);
+        let samples = [
+            "AI and GPU math",
+            "Lists and statistics",
+            "Method comparison",
+        ]
+        .map(String::from);
 
         // A new installation gets the samples, and opens the welcome sheet.
         let d = temp("samples-new");
@@ -522,10 +528,11 @@ mod tests {
         assert_eq!(got, [&samples[..], &["Welcome".to_string()]].concat());
         // Starting again adds nothing, and still opens the welcome sheet.
         assert_eq!(prepare(&d, None, "# Welcome").unwrap(), "Welcome.reckon");
-        assert_eq!(list(&d).len(), 3);
+        assert_eq!(list(&d).len(), 4);
         // A deleted sample stays deleted.
         trash(&d, "Lists and statistics.reckon").unwrap();
         trash(&d, "Method comparison.reckon").unwrap();
+        trash(&d, "AI and GPU math.reckon").unwrap();
         prepare(&d, None, "# Welcome").unwrap();
         assert_eq!(titles(&d), ["Welcome"]);
         let _ = fs::remove_dir_all(&d);
@@ -547,7 +554,7 @@ mod tests {
         prepare(&d, None, "# Welcome").unwrap();
         assert_eq!(
             fs::read_to_string(d.join(SAMPLES_SEEN)).unwrap(),
-            "something-older\nstatistics\nmethod-comparison\n"
+            "something-older\nstatistics\nmethod-comparison\nai-math\n"
         );
         let _ = fs::remove_dir_all(&d);
     }

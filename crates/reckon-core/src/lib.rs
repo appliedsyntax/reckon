@@ -101,6 +101,21 @@ const TOO_LONG: &str = "line is too long to evaluate";
 /// allows functions that call each other twice to do 2^32 evaluations.
 pub(crate) const MAX_CALLS: u32 = 10_000;
 
+/// Number formats for model weights, and the bytes one value takes.
+const NUMBER_FORMATS: &[(&str, f64)] = &[
+    ("fp64", 8.0),
+    ("fp32", 4.0),
+    ("tf32", 4.0),
+    ("fp16", 2.0),
+    ("bf16", 2.0),
+    ("fp8", 1.0),
+    ("int8", 1.0),
+    ("fp6", 0.75),
+    ("int4", 0.5),
+    ("fp4", 0.5),
+    ("nf4", 0.5),
+];
+
 /// How many of a line's items count toward [`MAX_LINE_ITEMS`]. A plain
 /// number that is a whole value in a list, as in `[1.5, -2, 3]`, does not
 /// make evaluation go any deeper, so it counts as nothing, and so do its
@@ -147,13 +162,23 @@ impl Engine {
     }
 
     fn build(zones: ZoneDb, fixed_now: Option<f64>) -> Engine {
+        let reg = Registry::new();
+        // Number formats as the bytes one value takes: 70B params * bf16.
+        let byte = units::Unit::simple(reg.by_key("B").expect("bytes are built in"));
+        let globals = NUMBER_FORMATS
+            .iter()
+            .flat_map(|(name, bytes)| {
+                let v = Value::qty(*bytes, byte.clone());
+                [(name.to_string(), v.clone()), (name.to_uppercase(), v)]
+            })
+            .collect();
         Engine {
-            reg: Registry::new(),
+            reg,
             rates: Rates::builtin(),
             zones,
             settings: Settings::default(),
             functions: HashMap::new(),
-            globals: HashMap::new(),
+            globals,
             fixed_now,
             plugin_errors: Vec::new(),
             plugins: Vec::new(),

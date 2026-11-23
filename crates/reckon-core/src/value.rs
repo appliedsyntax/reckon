@@ -268,6 +268,12 @@ fn format_list(l: &List, ucx: &UnitCtx, s: &Settings, list_width: usize) -> Stri
 }
 
 fn format_quantity(q: &Quantity, ucx: &UnitCtx, s: &Settings) -> String {
+    let (v, unit) = ucx.shown(q.v, &q.unit);
+    let q = &Quantity {
+        v,
+        unit,
+        fmt: q.fmt,
+    };
     let money = q
         .unit
         .as_simple()

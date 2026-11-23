@@ -1,0 +1,51 @@
+# AI and GPU math
+// Rough numbers for a model: memory, compute, time and cost.
+// Change a number at the top and every line below follows.
+
+# Will it fit on the GPU?
+model = 70B params
+Weights in bf16: model * bf16 in GB
+Weights in int4: model * int4 in GB
+// KV cache per token: 2 (keys and values) × layers × KV heads × head size.
+kv = 2 * 80 * 8 * 128 * bf16 / token
+Cache, 32k context, 8 users: kv * 32768 tokens * 8 in GB
+With 20% overhead: (model * bf16 + kv * 32768 tokens * 8) * 1.2 in GB
+
+# Training
+data = 2T tokens
+// About 6 operations per parameter for each token: 6 × N × D.
+Compute: 6 * model * data in ZFLOP
+gpus = 1024
+peak = 989 TFLOPS
+mfu = 40%
+days = 6 * model * data / (gpus * peak * mfu) in days
+Cost at $2.50 per GPU-hour: gpus * days * $2.50/h
+
+# Serving
+// Generating one token reads every weight once.
+Tokens/s per user: 3.35 TB/s / (model * bf16) in tokens/s
+rate = 1500 tokens/s
+Cost per million tokens: $2.50/h / rate in $/Mtok
+
+# API bill
+price_in = $3/Mtok
+price_out = $15/Mtok
+request = 2000 tokens * price_in + 500 tokens * price_out
+Per 1,000 requests: 1000 * request
+Per month at 50k a day: 50k * 30 * request
+
+# Is model B better?
+// The same 500 questions: A gets 412 right, B gets 431.
+Model A: accuracy_ci(412, 500)
+Model B: accuracy_ci(431, 500)
+// They disagree on 61: 21 only A gets right, 40 only B.
+McNemar p-value: mcnemar(21, 40)
+// Below 0.05, so the gap is unlikely to be chance.
+Items for ±2% at 85%: items_needed(85%, 2%)
+Three tests at once: holm(0.012, 0.03, 0.04)
+
+# Scores and losses
+softmax(2, 1, 0.1)
+sigmoid(1.5)
+Perplexity at loss 2.1: perplexity(2.1)
+Bits for 50k tokens: log2(50000)

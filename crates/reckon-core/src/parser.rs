@@ -58,6 +58,9 @@ pub enum Item {
     /// A currency sign such as `$` (prefix or postfix).
     CurSym(Unit),
     Scale(f64),
+    /// A word stuck to a number that is not a unit (`12xyz`). An error, so
+    /// that a mistyped unit does not quietly give the bare number.
+    Unknown(String),
     Func(String),
     Var(String),
     Const(f64),
@@ -146,6 +149,17 @@ pub const BUILTIN_FUNCS: &[&str] = &[
     "deming_intercept",
     "deming_slope_ci",
     "deming_intercept_ci",
+    "sigmoid",
+    "logit",
+    "log2",
+    "softmax",
+    "logsumexp",
+    "perplexity",
+    "accuracy_ci",
+    "mcnemar",
+    "paired_ci",
+    "items_needed",
+    "holm",
 ];
 
 /// Functions that also work with no arguments, on the lines above, the way
@@ -181,6 +195,14 @@ const CALL_ONLY_FUNCS: &[&str] = &[
     "deming_intercept",
     "deming_slope_ci",
     "deming_intercept_ci",
+    "softmax",
+    "logsumexp",
+    "perplexity",
+    "accuracy_ci",
+    "mcnemar",
+    "paired_ci",
+    "items_needed",
+    "holm",
 ];
 
 /// Whether a function name at this position is a call or a word in a note.
@@ -358,34 +380,58 @@ pub fn classify(toks: &[Token], cx: &ClassifyCtx) -> Vec<It> {
                 let lw = w.to_lowercase();
                 let next_is_num = matches!(toks.get(i + 1).map(|t| &t.tok), Some(Tok::Num { .. }));
                 let prev_is_num = matches!(prev_item, Some(Item::Num(..)));
-                let item =
-                    if matches!(prev_item, Some(Item::Kw(Kw::In))) && format_word(&lw).is_some() {
-                        Some(Item::Kw(Kw::Fmt(format_word(&lw).unwrap())))
-                    } else if (cx.is_var)(w) {
-                        Some(Item::Var(w.clone()))
-                    } else if lw == "a" {
-                        matches!(prev_item, Some(Item::Kw(Kw::As))).then_some(Item::Kw(Kw::A))
-                    } else if lw == "percent" || lw == "pct" {
-                        Some(Item::Sym('%'))
-                    } else if let Some(k) = keyword(&lw) {
-                        Some(Item::Kw(k))
-                    } else if (cx.is_func)(&lw)
-                        && is_call(&lw, prev_item.as_ref(), toks.get(i + 1).map(|t| &t.tok))
-                    {
-                        Some(Item::Func(lw.clone()))
-                    } else if prev_is_num && scale(w).is_some() {
-                        Some(Item::Scale(scale(w).unwrap()))
-                    } else if let Some(c) = constant(w) {
-                        Some(Item::Const(c))
-                    } else if let Some(u) = cx.reg.lookup(w) {
-                        Some(Item::Unit(u))
-                    } else if let Some(z) = cx.zones.resolve(w) {
-                        Some(Item::Zone(z))
+                // `7B params` and `2T tokens` are billions and trillions,
+                // although `7B` alone is seven bytes.
+                let counted = matches!(toks.get(i + 1).map(|t| &t.tok), Some(Tok::Word(n))
+                    if matches!(n.to_lowercase().as_str(),
+                        "param" | "params" | "parameter" | "parameters" | "token" | "tokens" | "tok"));
+                let next_glued = |c: char| {
+                    toks.get(i + 1)
+                        .is_some_and(|t| t.tok == Tok::Sym(c) && t.span.start == span.end)
+                };
+                let glued_to_num = i > 0
+                    && matches!(toks[i - 1].tok, Tok::Num { .. })
+                    && toks[i - 1].span.end == span.start;
+                let item = if matches!(prev_item, Some(Item::Kw(Kw::In)))
+                    && format_word(&lw).is_some()
+                {
+                    Some(Item::Kw(Kw::Fmt(format_word(&lw).unwrap())))
+                } else if (cx.is_var)(w) {
+                    Some(Item::Var(w.clone()))
+                } else if lw == "a" {
+                    matches!(prev_item, Some(Item::Kw(Kw::As))).then_some(Item::Kw(Kw::A))
+                } else if lw == "percent" || lw == "pct" {
+                    Some(Item::Sym('%'))
+                } else if let Some(k) = keyword(&lw) {
+                    Some(Item::Kw(k))
+                } else if (cx.is_func)(&lw)
+                    && is_call(&lw, prev_item.as_ref(), toks.get(i + 1).map(|t| &t.tok))
+                {
+                    Some(Item::Func(lw.clone()))
+                } else if prev_is_num && counted && matches!(w.as_str(), "B" | "b" | "T" | "t") {
+                    Some(Item::Scale(if w.eq_ignore_ascii_case("b") {
+                        1e9
                     } else {
-                        month_from_name(w)
-                            .filter(|_| next_is_num || prev_is_num)
-                            .map(Item::Month)
-                    };
+                        1e12
+                    }))
+                } else if prev_is_num && scale(w).is_some() {
+                    Some(Item::Scale(scale(w).unwrap()))
+                } else if let Some(c) = constant(w) {
+                    Some(Item::Const(c))
+                } else if let Some(u) = cx.reg.lookup(w) {
+                    Some(Item::Unit(u))
+                } else if let Some(z) = cx.zones.resolve(w) {
+                    Some(Item::Zone(z))
+                } else if let Some(m) = month_from_name(w).filter(|_| next_is_num || prev_is_num) {
+                    Some(Item::Month(m))
+                } else if next_glued('(') && w.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    // `sigmoid(0)` with no such function is an error, not 0.
+                    Some(Item::Func(lw.clone()))
+                } else if glued_to_num && !matches!(lw.as_str(), "st" | "nd" | "rd" | "th" | "x") {
+                    Some(Item::Unknown(w.clone()))
+                } else {
+                    None
+                };
                 if let Some(item) = item {
                     push(&mut out, item, span.end);
                 }
@@ -428,7 +474,9 @@ pub fn highlight_class(item: &Item) -> Hl {
         Item::Num(..) | Item::Time(..) | Item::Date(..) | Item::Const(_) | Item::Scale(_) => {
             Hl::Number
         }
-        Item::Unit(_) | Item::CurSym(_) | Item::Zone(_) | Item::Month(_) => Hl::Unit,
+        Item::Unit(_) | Item::CurSym(_) | Item::Zone(_) | Item::Month(_) | Item::Unknown(_) => {
+            Hl::Unit
+        }
         Item::Kw(_) => Hl::Keyword,
         Item::Var(_) | Item::Ident(_) => Hl::Variable,
         Item::Func(_) => Hl::Function,
@@ -586,6 +634,7 @@ impl<'a> Parser<'a> {
     fn finish(&self) -> Result<(), String> {
         match self.peek() {
             None | Some(Item::Sym('=')) => Ok(()),
+            Some(Item::Unknown(w)) => Err(format!("unknown unit {w}")),
             Some(other) => Err(format!("unexpected {other:?}")),
         }
     }
@@ -1030,6 +1079,7 @@ impl<'a> Parser<'a> {
                 let y = self.take_year();
                 Expr::DateLit(y, m, d as u32)
             }
+            Item::Unknown(w) => return Err(format!("unknown unit {w}")),
             other => return Err(format!("unexpected {other:?}")),
         })
     }

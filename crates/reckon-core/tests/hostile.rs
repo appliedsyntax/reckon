@@ -289,3 +289,33 @@ fn hostile_rate_responses_are_rejected_or_cleaned() {
 
     assert!(Rates::from_responses(r#"{"result":"success","rates":{"USD":0}}"#, None).is_err());
 }
+
+#[test]
+fn model_evaluation_on_long_lists_stays_cheap() {
+    let list = |k: usize| {
+        let v: Vec<String> = (0..10_000).map(|i| ((i * k) % 2).to_string()).collect();
+        format!("[{}]", v.join(", "))
+    };
+    let data = format!("a = {}\nb = {}\n", list(1), list(3));
+    for f in [
+        "softmax(a)",
+        "logsumexp(a)",
+        "holm(a)",
+        "mcnemar(a, b)",
+        "paired_ci(a, b)",
+    ] {
+        let sheet = format!("{data}{f}");
+        let started = Instant::now();
+        assert!(last_result(sheet).is_some(), "{f}");
+        assert!(started.elapsed() < Duration::from_secs(2), "{f} was slow");
+    }
+    // Extreme inputs give a number or an error, never a hang.
+    for f in [
+        "items_needed(50%, 0.0000001%)",
+        "mcnemar(1e14, 1)",
+        "sigmoid(1e308)",
+        "logsumexp(1e308, 1e308)",
+    ] {
+        let _ = last_result(f.to_string());
+    }
+}

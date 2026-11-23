@@ -7,7 +7,7 @@ use crate::parser::{BinOp, Expr, Pct, Target};
 use crate::stats::{self, Fit, Line, PbError, PB_MAX_POINTS};
 use crate::time::{add_months, civil_from_days, days_from_civil, days_in_month, split};
 use crate::tz::Zone;
-use crate::units::{dim, Conv, Unit, UnitCtx, ANGLE, DIM_COUNT, TIME};
+use crate::units::{dim, Conv, Unit, UnitCtx, ANGLE, TIME};
 use crate::value::{DateTime, List, Quantity, Show, Value};
 use crate::{Engine, UserFn};
 
@@ -451,7 +451,7 @@ impl<'a> Eval<'a> {
         if let Some(u2) = yu.as_simple() {
             for (u1, _) in &x.unit.parts {
                 if *u1 != u2
-                    && ucx.reg.def(*u1).dims == ucx.reg.def(u2).dims
+                    && ucx.same_kind(*u1, u2)
                     && !is_affine(&ucx, &yu)
                     && !is_affine(&ucx, &Unit::simple(*u1))
                 {
@@ -471,9 +471,8 @@ impl<'a> Eval<'a> {
         }
         let mut v = if div { x.v / yv } else { x.v * yv };
         let both = !x.unit.is_none() && !y.unit.is_none();
-        if both && !unit.is_none() && ucx.dims(&unit) == [0; DIM_COUNT] {
-            v *= ucx.factor(&unit)?;
-            unit = Unit::none();
+        if both && !unit.is_none() {
+            (v, unit) = ucx.tidy(v, unit)?;
         }
         Ok(Quantity {
             v,
@@ -619,6 +618,14 @@ impl<'a> Eval<'a> {
 
     fn convert(&self, v: Value, t: &Target) -> R {
         match (t, v) {
+            // A plain number counts single FLOP or tokens: 8.4e22 in EFLOP.
+            (Target::Unit(u), Value::Num(q)) if q.unit.is_none() && self.ucx().is_count(u) => {
+                Ok(Value::Num(Quantity {
+                    v: q.v / self.ucx().factor(u)?,
+                    unit: u.clone(),
+                    fmt: q.fmt,
+                }))
+            }
             (Target::Unit(u), v) => self.apply_unit(v, u),
             (Target::Fmt(f), Value::Num(q)) => Ok(Value::Num(Quantity { fmt: *f, ..q })),
             (Target::Fmt(f), Value::Percent(p)) => Ok(Value::Num(Quantity {
@@ -702,6 +709,8 @@ impl<'a> Eval<'a> {
             | "deming_intercept"
             | "deming_slope_ci"
             | "deming_intercept_ci" => return self.compare(name, &vals),
+            "softmax" | "logsumexp" | "accuracy_ci" | "mcnemar" | "paired_ci" | "items_needed"
+            | "holm" => return self.evaluation(name, &vals),
             _ => {}
         }
         let arg = |i: usize| -> Result<Value, String> {
@@ -753,6 +762,14 @@ impl<'a> Eval<'a> {
             "log" => f1(f64::log10),
             "ln" => f1(f64::ln),
             "exp" => f1(f64::exp),
+            "log2" => f1(f64::log2),
+            "sigmoid" => f1(stats::sigmoid),
+            "logit" => match plain(0)? {
+                p if p > 0.0 && p < 1.0 => Ok(Value::num((p / (1.0 - p)).ln())),
+                _ => Err("logit needs a probability between 0 and 1".into()),
+            },
+            // Perplexity from a loss in nats per token.
+            "perplexity" => f1(f64::exp),
             "fact" | "factorial" => self.factorial(arg(0)?),
             "round" | "ceil" | "floor" => {
                 let places = if vals.len() > 1 { plain(1)? as i32 } else { 0 };
@@ -1109,6 +1126,160 @@ impl<'a> Eval<'a> {
             _ => {
                 let (lo, hi) = ci()?.intercept;
                 self.interval(units.value(lo), units.value(hi))
+            }
+        }
+    }
+
+    /// Machine-learning helpers and statistics for comparing models on an
+    /// evaluation set.
+    fn evaluation(&mut self, name: &str, vals: &[Value]) -> R {
+        let count = |v: &Value, what: &str| -> Result<f64, String> {
+            match v {
+                Value::Num(q) if q.unit.is_none() && q.v >= 0.0 && q.v.fract() == 0.0 => Ok(q.v),
+                _ => Err(format!("{what} must be a whole number of items")),
+            }
+        };
+        let rate = |v: &Value| -> Result<f64, String> {
+            match v {
+                Value::Percent(p) if *p > 0.0 && *p < 100.0 => Ok(p / 100.0),
+                Value::Num(q) if q.unit.is_none() && q.v > 0.0 && q.v < 1.0 => Ok(q.v),
+                _ => Err(format!("{name} needs percentages between 0% and 100%")),
+            }
+        };
+        let plain_list = |l: &List| -> Result<Vec<f64>, String> {
+            if !l.unit.is_none() {
+                return Err(format!("{name} works on plain numbers"));
+            }
+            Ok(if l.percent {
+                l.v.iter().map(|p| p / 100.0).collect()
+            } else {
+                l.v.clone()
+            })
+        };
+        let pair = |lo: f64, hi: f64, l: &List| {
+            Value::List(Arc::new(List {
+                v: vec![lo, hi],
+                unit: l.unit.clone(),
+                percent: l.percent,
+            }))
+        };
+        match name {
+            "softmax" | "logsumexp" | "holm" => {
+                let list = self.gather(vals, true)?;
+                if list.v.is_empty() {
+                    return Err(format!("{name} needs at least one value"));
+                }
+                self.charge(list.v.len())?;
+                let v = plain_list(&list)?;
+                let plain = |v: Vec<f64>| {
+                    Value::List(Arc::new(List {
+                        v,
+                        unit: Unit::none(),
+                        percent: false,
+                    }))
+                };
+                match name {
+                    "softmax" => Ok(plain(stats::softmax(&v))),
+                    "logsumexp" => Ok(Value::num(stats::logsumexp(&v))),
+                    _ => {
+                        if v.iter().any(|p| !(0.0..=1.0).contains(p)) {
+                            return Err("holm needs p-values between 0 and 1".into());
+                        }
+                        Ok(plain(stats::holm(&v)))
+                    }
+                }
+            }
+            "accuracy_ci" => {
+                let [k, n] = vals else {
+                    return Err("accuracy_ci needs correct and total: accuracy_ci(412, 500)".into());
+                };
+                let n = count(n, "the total")?;
+                let k = match k {
+                    Value::Percent(p) if (0.0..=100.0).contains(p) => (p / 100.0 * n).round(),
+                    k => count(k, "the number correct")?,
+                };
+                if n == 0.0 || k > n {
+                    return Err("accuracy_ci needs correct ≤ total, and a total above 0".into());
+                }
+                let (lo, hi) = stats::wilson(k, n);
+                Ok(pair(
+                    lo * 100.0,
+                    hi * 100.0,
+                    &List {
+                        v: Vec::new(),
+                        unit: Unit::none(),
+                        percent: true,
+                    },
+                ))
+            }
+            "mcnemar" => match vals {
+                [Value::List(a), Value::List(b)] => {
+                    let (a, b) = (plain_list(a)?, plain_list(b)?);
+                    if a.len() != b.len() {
+                        return Err("the two lists must hold the same number of values".into());
+                    }
+                    if a.iter().chain(&b).any(|v| *v != 0.0 && *v != 1.0) {
+                        return Err("mcnemar needs lists of 1 (right) and 0 (wrong)".into());
+                    }
+                    self.charge(a.len())?;
+                    let only = |x: &[f64], y: &[f64]| {
+                        x.iter()
+                            .zip(y)
+                            .filter(|(p, q)| **p == 1.0 && **q == 0.0)
+                            .count() as u64
+                    };
+                    Ok(Value::num(stats::mcnemar(only(&a, &b), only(&b, &a))))
+                }
+                [b, c] => {
+                    let b = count(b, "each count")?;
+                    let c = count(c, "each count")?;
+                    if b + c > 1e15 {
+                        return Err("too many items".into());
+                    }
+                    Ok(Value::num(stats::mcnemar(b as u64, c as u64)))
+                }
+                _ => {
+                    Err("mcnemar needs two counts of disagreements, or two lists of 1 and 0".into())
+                }
+            },
+            "paired_ci" => {
+                let [Value::List(a), Value::List(b)] = vals else {
+                    return Err("paired_ci needs two lists: paired_ci(a, b)".into());
+                };
+                if a.v.len() != b.v.len() {
+                    return Err("the two lists must hold the same number of values".into());
+                }
+                if a.percent != b.percent {
+                    return Err("cannot mix percentages and numbers".into());
+                }
+                self.charge(a.v.len())?;
+                // b in a's unit (or a in b's, when only b has one).
+                let (to, from) = if a.unit.is_none() { (b, a) } else { (a, b) };
+                let ucx = self.ucx();
+                let moved: Vec<f64> = if from.unit.is_none() || from.unit == to.unit {
+                    from.v.clone()
+                } else {
+                    from.v
+                        .iter()
+                        .map(|v| ucx.convert(*v, &from.unit, &to.unit))
+                        .collect::<Result<_, _>>()?
+                };
+                let (av, bv) = if std::ptr::eq(to, a) {
+                    (&a.v, &moved)
+                } else {
+                    (&moved, &b.v)
+                };
+                let (lo, hi) =
+                    stats::paired_interval(av, bv).ok_or("paired_ci needs at least two items")?;
+                Ok(pair(lo, hi, to))
+            }
+            _ => {
+                let [p, m] = vals else {
+                    return Err(
+                        "items_needed needs an accuracy and a margin: items_needed(80%, 2%)".into(),
+                    );
+                };
+                Ok(Value::num(stats::items_needed(rate(p)?, rate(m)?)))
             }
         }
     }

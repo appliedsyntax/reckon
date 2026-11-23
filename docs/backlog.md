@@ -31,6 +31,14 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [x] **Long lists on one line.** Plain numbers in a list no longer count toward the 400-item line limit, so a line holds up to 10,000 values.
 - [x] **Sample sheet "Method comparison".** The three fits side by side on thirty samples.
 
+## Done on the ml-tools branch (not yet released)
+
+- [x] **Units for AI work.** Parameters, tokens and FLOP as counts, FLOPS as a rate, `70B params`, `2T tokens`, and number formats (`bf16`, `fp8`, `int4`, …) in bytes.
+- [x] **Functions.** `sigmoid`, `logit`, `softmax`, `logsumexp`, `log2`, `perplexity`.
+- [x] **Evaluation statistics.** `accuracy_ci` (Wilson), `mcnemar`, `paired_ci`, `items_needed`, `holm`; checked against R.
+- [x] **Errors instead of silence.** An unknown function call, or an unknown word stuck to a number, is an error rather than a quietly wrong number.
+- [x] **Sample sheet "AI and GPU math".** Model memory, KV cache, training compute and days, serving cost, an API bill and a model comparison.
+
 ## Next, if wanted
 
 - [ ] **Check against mcr.** Compare Passing-Bablok and Deming with the R package mcr, the usual reference in clinical chemistry, on its example data. (S)
@@ -40,6 +48,7 @@ Size is a rough guide: **S** is a day or less, **M** is a few days, **L** is a w
 - [ ] **More descriptive statistics.** Quantiles, smallest and largest value. `min` is already the unit "minutes", so these need other names. (S)
 - [ ] **Quadratic and cubic regression.** Polynomial fits of degree 2 and 3, validated against the NIST polynomial data sets. Needs a way to show three or four coefficients from one line. (M)
 - [ ] **Arithmetic on lists.** `weights * 2`, `weights in lb`. Today a list can only be passed to a function. (S)
+- [ ] **More evaluation statistics.** Items needed to detect a gap between two models (paired McNemar power), Cohen's kappa for agreement between raters, and the bootstrap. (S)
 - [ ] **Results out as JSON on the command line.** Data already goes in with `-d`; printing results as JSON would let scripts read every method's output. (S)
 
 ## Parked: laboratory methods

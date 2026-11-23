@@ -287,6 +287,106 @@ pub fn passing_bablok(x: &[f64], y: &[f64]) -> Result<Line, PbError> {
     })
 }
 
+// ------------------------------------------------- machine learning
+
+/// The logistic function, 1 / (1 + e⁻ˣ), without overflow for large |x|.
+pub fn sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let e = x.exp();
+        e / (1.0 + e)
+    }
+}
+
+/// ln Σ eˣ, without overflow: the largest value is taken out first.
+pub fn logsumexp(v: &[f64]) -> f64 {
+    let m = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !m.is_finite() {
+        return m;
+    }
+    m + v.iter().map(|x| (x - m).exp()).sum::<f64>().ln()
+}
+
+/// Probabilities from scores (logits): eˣ / Σ eˣ.
+pub fn softmax(v: &[f64]) -> Vec<f64> {
+    let l = logsumexp(v);
+    v.iter().map(|x| (x - l).exp()).collect()
+}
+
+// ------------------------------------------------------- evaluation
+
+/// Wilson score interval (95%) for a proportion of `k` successes out of
+/// `n`. Unlike the textbook p ± 1.96·√(p(1 − p)/n) it stays inside 0 to 1
+/// and behaves for small n and for accuracies near 0% or 100%.
+pub fn wilson(k: f64, n: f64) -> (f64, f64) {
+    let z = Z95;
+    let p = k / n;
+    let z2n = z * z / n;
+    let centre = (p + z2n / 2.0) / (1.0 + z2n);
+    let half = z * (p * (1.0 - p) / n + z2n / (4.0 * n)).sqrt() / (1.0 + z2n);
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+/// McNemar's test for two models scored on the same items: `b` items only
+/// the first got right, `c` only the second. Two-sided p-value: exact
+/// (binomial) below 25 disagreements, otherwise the chi-squared test with
+/// continuity correction.
+pub fn mcnemar(b: u64, c: u64) -> f64 {
+    let n = b + c;
+    if n == 0 {
+        return 1.0;
+    }
+    if n < 25 {
+        // P(X ≤ min(b, c)) for X ~ Binomial(n, ½), doubled.
+        let k = b.min(c);
+        let ln_half_n = n as f64 * 0.5f64.ln();
+        let tail: f64 = (0..=k).map(|i| (ln_choose(n, i) + ln_half_n).exp()).sum();
+        return (2.0 * tail).min(1.0);
+    }
+    let d = (b as f64 - c as f64).abs() - 1.0;
+    let chi2 = d.max(0.0).powi(2) / n as f64;
+    gamma_q(0.5, chi2 / 2.0)
+}
+
+fn ln_choose(n: u64, k: u64) -> f64 {
+    ln_gamma(n as f64 + 1.0) - ln_gamma(k as f64 + 1.0) - ln_gamma((n - k) as f64 + 1.0)
+}
+
+/// 95% confidence interval for the mean of paired differences b − a, from
+/// Student's t. For per-item scores of two models on the same items.
+pub fn paired_interval(a: &[f64], b: &[f64]) -> Option<(f64, f64)> {
+    let n = a.len();
+    if n < 2 || b.len() != n {
+        return None;
+    }
+    let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| y - x).collect();
+    let m = mean(&d);
+    let se = (variance(&d, true) / n as f64).sqrt();
+    let t = t_quantile(0.975, n as f64 - 1.0);
+    Some((m - t * se, m + t * se))
+}
+
+/// Items needed so that the 95% interval of an accuracy `p` is ± `margin`.
+pub fn items_needed(p: f64, margin: f64) -> f64 {
+    (Z95 * Z95 * p * (1.0 - p) / (margin * margin)).ceil()
+}
+
+/// Holm's step-down adjustment of p-values for many comparisons, in the
+/// order given. Each is at least as large as the p-value it adjusts.
+pub fn holm(p: &[f64]) -> Vec<f64> {
+    let m = p.len();
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by(|a, b| p[*a].total_cmp(&p[*b]));
+    let mut out = vec![0.0; m];
+    let mut running = 0.0f64;
+    for (rank, i) in order.into_iter().enumerate() {
+        running = running.max(((m - rank) as f64 * p[i]).min(1.0));
+        out[i] = running;
+    }
+    out
+}
+
 // ------------------------------------------------------ distributions
 
 /// The normal quantile for a two-sided 95% interval.
@@ -372,6 +472,52 @@ fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
         }
     }
     ln_front.exp() * h / a
+}
+
+/// Upper regularised incomplete gamma function Q(a, x), by its series for
+/// x < a + 1 and its continued fraction otherwise (Numerical Recipes).
+fn gamma_q(a: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 1.0;
+    }
+    let ln_front = a * x.ln() - x - ln_gamma(a);
+    if x < a + 1.0 {
+        let (mut ap, mut sum) = (a, 1.0 / a);
+        let mut del = sum;
+        for _ in 0..500 {
+            ap += 1.0;
+            del *= x / ap;
+            sum += del;
+            if del.abs() < sum.abs() * 1e-16 {
+                break;
+            }
+        }
+        return 1.0 - sum * ln_front.exp();
+    }
+    const TINY: f64 = 1e-300;
+    let mut b = x + 1.0 - a;
+    let mut c = 1.0 / TINY;
+    let mut d = 1.0 / b;
+    let mut h = d;
+    for i in 1..500 {
+        let an = -(i as f64) * (i as f64 - a);
+        b += 2.0;
+        d = an * d + b;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = b + an / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-16 {
+            break;
+        }
+    }
+    ln_front.exp() * h
 }
 
 /// ln Γ(x) for x > 0 (Lanczos approximation, g = 7, about 15 digits).
@@ -661,5 +807,55 @@ mod tests {
             Err(PbError::Negative)
         );
         assert_eq!(passing_bablok(&[1.0], &[1.0]), Err(PbError::TooFewPoints));
+    }
+
+    #[test]
+    fn machine_learning_functions() {
+        assert_eq!(sigmoid(0.0), 0.5);
+        close(sigmoid(2.0), 0.880797077977882, 14);
+        assert_eq!(sigmoid(-1000.0), 0.0);
+        assert_eq!(sigmoid(1000.0), 1.0);
+        close(logsumexp(&[1.0, 2.0, 3.0]), 3.40760596444438, 14);
+        // Large scores do not overflow.
+        close(logsumexp(&[1000.0, 1000.0]), 1000.0 + 2f64.ln(), 14);
+        let p = softmax(&[1.0, 2.0, 3.0]);
+        close(p[2], 0.665240955774822, 14);
+        close(p.iter().sum::<f64>(), 1.0, 14);
+    }
+
+    /// Reference values from R 4.6: prop.test (correct = FALSE) for the
+    /// Wilson interval, mcnemar.test and binom.test, t.test (paired),
+    /// p.adjust (holm), pchisq and qnorm.
+    #[test]
+    fn evaluation_statistics() {
+        let pair = |got: (f64, f64), want: (f64, f64)| {
+            close(got.0 + 1.0, want.0 + 1.0, 13);
+            close(got.1, want.1, 13);
+        };
+        pair(wilson(82.0, 100.0), (0.733326416136993, 0.882997745010536));
+        pair(wilson(0.0, 20.0), (0.0, 0.161125158052819));
+        pair(
+            wilson(1990.0, 2000.0),
+            (0.990820304050058, 0.997281819141501),
+        );
+        close(mcnemar(30, 12), 0.00871191296237959, 12);
+        close(mcnemar(120, 90), 0.0453719050658386, 12);
+        close(mcnemar(7, 1), 0.0703125, 13);
+        close(mcnemar(1, 7), 0.0703125, 13);
+        assert_eq!(mcnemar(12, 12), 1.0);
+        close(mcnemar(3, 0), 0.25, 13);
+        assert_eq!(mcnemar(0, 0), 1.0);
+        close(gamma_q(0.5, 3.84 / 2.0), 0.050043521248705, 12);
+        close(gamma_q(0.5, 0.3 / 2.0), 0.583882420770365, 12);
+        let a = [0.61, 0.72, 0.55, 0.80, 0.67, 0.59, 0.70, 0.64, 0.75, 0.58];
+        let b = [0.66, 0.74, 0.60, 0.79, 0.71, 0.65, 0.73, 0.70, 0.77, 0.62];
+        pair(
+            paired_interval(&a, &b).unwrap(),
+            (0.0204731110206968, 0.0515268889793032),
+        );
+        assert!(paired_interval(&[1.0], &[2.0]).is_none());
+        assert_eq!(holm(&[0.01, 0.04, 0.03, 0.2]), [0.04, 0.09, 0.09, 0.2]);
+        assert_eq!(holm(&[0.5, 0.9]), [1.0, 1.0]);
+        assert_eq!(items_needed(0.8, 0.02), 1537.0);
     }
 }

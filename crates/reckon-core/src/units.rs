@@ -727,6 +727,42 @@ impl Registry {
             &["kn", "kt"],
             &["knot", "knots"],
         );
+
+        // Machine learning. Floating-point operations, tokens and model
+        // parameters are counts with no dimension, so 6 × parameters ×
+        // tokens is a number of FLOP and FLOP/s times a time is FLOP again.
+        // FLOPs (small s) is a count, FLOPS a rate.
+        let count = [0; DIM_COUNT];
+        self.prefixed("FLOP", &["FLOPs"], &["flop"], count, 1.0, BIG, &[]);
+        self.prefixed("FLOPS", &[], &["flops"], dim(TIME, -1), 1.0, BIG, &[]);
+        self.lin(
+            "token",
+            "tok",
+            Some("tokens"),
+            count,
+            1.0,
+            &["tok"],
+            &["token", "tokens"],
+        );
+        for (ps, word, f) in [
+            ("k", "thousand", 1e3),
+            ("M", "million", 1e6),
+            ("B", "billion", 1e9),
+            ("T", "trillion", 1e12),
+        ] {
+            let key = format!("{ps}tok");
+            let names = [format!("{word} tokens"), format!("{word} token")];
+            self.lin(&key, &key, None, count, f, &[&key], &[&names[0], &names[1]]);
+        }
+        self.lin(
+            "param",
+            "param",
+            Some("params"),
+            count,
+            1.0,
+            &[],
+            &["param", "params", "parameter", "parameters"],
+        );
     }
 
     /// Resolves a phrase (one or more words joined by single spaces).
@@ -809,6 +845,82 @@ impl UnitCtx<'_> {
             }
         }
         d
+    }
+
+    /// What a unit with no dimension counts: `FLOP`, `tok` or `param`.
+    pub fn count_kind(&self, id: UnitId) -> Option<&'static str> {
+        let d = self.reg.def(id);
+        if d.dims != [0; DIM_COUNT] {
+            return None;
+        }
+        ["FLOP", "tok", "param"]
+            .into_iter()
+            .find(|k| d.key.ends_with(k) || (*k == "tok" && d.key == "token"))
+    }
+
+    /// Whether one unit can be written in the other: the same dimension and,
+    /// for counts, the same kind (1 Mtok is 10⁶ tokens, but not 10⁶ FLOP).
+    pub fn same_kind(&self, a: UnitId, b: UnitId) -> bool {
+        self.reg.def(a).dims == self.reg.def(b).dims && self.count_kind(a) == self.count_kind(b)
+    }
+
+    /// Tidies the unit of a product or quotient of two quantities that both
+    /// had units. Counts of one kind are written in one unit, so `tok/Mtok`
+    /// cancels. A result with no dimension is a plain number, unless it is a
+    /// single count such as `tokens`.
+    pub fn tidy(&self, mut v: f64, unit: Unit) -> Result<(f64, Unit), String> {
+        let mut first: Vec<(&str, UnitId)> = Vec::new();
+        let mut parts = Vec::new();
+        for (id, p) in unit.parts {
+            let Some(kind) = self.count_kind(id) else {
+                parts.push((id, p));
+                continue;
+            };
+            let to = match first.iter().find(|f| f.0 == kind) {
+                Some(f) => f.1,
+                None => {
+                    first.push((kind, id));
+                    id
+                }
+            };
+            if to != id {
+                v *= (self.factor_of(id)? / self.factor_of(to)?).powi(p as i32);
+            }
+            parts.push((to, p));
+        }
+        let unit = Unit::normalized(parts);
+        let is_count = |id: &UnitId| self.count_kind(*id).is_some();
+        let (counts, others): (Vec<(UnitId, i8)>, Vec<(UnitId, i8)>) =
+            unit.parts.iter().partition(|(id, _)| is_count(id));
+        if self.dims(&unit) == [0; DIM_COUNT] {
+            if others.is_empty() && counts.len() == 1 && counts[0].1 == 1 {
+                return Ok((v, unit));
+            }
+            return Ok((v * self.factor(&unit)?, Unit::none()));
+        }
+        Ok((v, unit))
+    }
+
+    /// The unit a value is shown in. Counts multiplied into a real quantity
+    /// fold into its number, so parameters × bytes shows as bytes. The value
+    /// keeps them, so dividing by parameters later still cancels.
+    pub fn shown(&self, v: f64, unit: &Unit) -> (f64, Unit) {
+        let (counts, others): (Vec<(UnitId, i8)>, Vec<(UnitId, i8)>) = unit
+            .parts
+            .iter()
+            .partition(|(id, _)| self.count_kind(*id).is_some());
+        if counts.is_empty() || others.is_empty() || !unit.parts.iter().all(|(_, p)| *p > 0) {
+            return (v, unit.clone());
+        }
+        match self.factor(&Unit { parts: counts }) {
+            Ok(f) => (v * f, Unit { parts: others }),
+            Err(_) => (v, unit.clone()),
+        }
+    }
+
+    /// Whether a unit is made only of counts, such as `EFLOP` or `Mtok`.
+    pub fn is_count(&self, u: &Unit) -> bool {
+        !u.is_none() && u.parts.iter().all(|(id, _)| self.count_kind(*id).is_some())
     }
 
     pub fn compatible(&self, a: &Unit, b: &Unit) -> bool {
