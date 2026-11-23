@@ -326,10 +326,13 @@ fn many_words_stuck_to_numbers_stay_cheap() {
     // keystroke; a large sheet of them must not freeze the app.
     let line: Vec<String> = (1..190).map(|i| format!("{i}abcde")).collect();
     let sheet = format!("{}\n", line.join(" ")).repeat(300);
+    // Before names were indexed this took 8.5 s in a release build. Debug
+    // builds, on a slow CI machine, need more room than the release check.
+    let limit = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
     let started = Instant::now();
     let _ = last_result(sheet);
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < limit,
         "{:?}",
         started.elapsed()
     );
